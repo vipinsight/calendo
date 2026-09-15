@@ -1,4 +1,4 @@
-# Calendo
+# <img src="icons/icon.png" alt="" width="48" height="48" align="absmiddle"> Calendo
 
 A month calendar in the macOS menu bar. No account, no main window, and
 nothing leaves this Mac.
