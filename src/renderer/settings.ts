@@ -125,12 +125,10 @@ function startSettings(api: DesktopApi): void {
   const theme = requireElement<HTMLSelectElement>("theme");
   const version = requireElement<HTMLParagraphElement>("version");
   const checkUpdates = requireElement<HTMLButtonElement>("check-updates");
-  const installUpdate = requireElement<HTMLButtonElement>("install-update");
   const openRepository = requireElement<HTMLButtonElement>("open-repository");
   const openProfile = requireElement<HTMLButtonElement>("open-profile");
   const openDonate = requireElement<HTMLButtonElement>("open-donate");
   const openSite = requireElement<HTMLButtonElement>("open-site");
-  const updateStatus = requireElement<HTMLParagraphElement>("update-status");
 
   buildIconStyles(iconStyles);
   beepPreview.append(lucideIcon(Volume2, 16));
@@ -460,47 +458,54 @@ function startSettings(api: DesktopApi): void {
     void api.beep();
   });
 
+  let updateAction: "check" | "install" = "check";
+
+  const setUpdateButton = (
+    label: string,
+    options?: { busy?: boolean; install?: boolean; detail?: string },
+  ): void => {
+    checkUpdates.textContent = label;
+    checkUpdates.disabled = Boolean(options?.busy);
+    checkUpdates.title = options?.detail ?? "";
+    checkUpdates.setAttribute("aria-busy", options?.busy ? "true" : "false");
+    updateAction = options?.install ? "install" : "check";
+  };
+
   const checkForUpdates = async (installIfFound = false): Promise<void> => {
-    updateStatus.textContent = "Checking…";
-    installUpdate.hidden = true;
+    setUpdateButton("Checking…", { busy: true });
     try {
       const offer = await api.checkForUpdates();
       if (!offer.version) {
-        updateStatus.textContent = "Calendo is up to date.";
+        setUpdateButton("Up to date");
         return;
       }
       if (installIfFound) {
-        updateStatus.textContent = `Installing ${offer.version}…`;
+        setUpdateButton(`Installing ${offer.version}…`, { busy: true, install: true });
         void api.installUpdate().catch((error: unknown) => {
           const detail = typeof error === "string" ? error : "Update failed";
-          updateStatus.textContent = detail;
+          setUpdateButton("Update failed", { install: true, detail });
         });
         return;
       }
-      updateStatus.textContent = `Version ${offer.version} is available.`;
-      installUpdate.textContent = `Update to ${offer.version} and Restart`;
-      installUpdate.hidden = false;
+      setUpdateButton(`Update to ${offer.version} and Restart`, { install: true });
     } catch (error) {
       const detail = typeof error === "string" ? error : "Could not reach update server";
-      updateStatus.textContent = `Update check failed: ${detail}`;
+      setUpdateButton("Could not check", { detail });
     }
   };
-  checkUpdates.addEventListener("click", () => void checkForUpdates(autoUpdate.checked));
-
-  // The app relaunches itself when this finishes, so success needs no message.
-  installUpdate.addEventListener("click", () => {
-    installUpdate.disabled = true;
-    checkUpdates.disabled = true;
-    updateStatus.textContent = "Downloading…";
-    void api.installUpdate().catch((error: unknown) => {
-      const detail = typeof error === "string" ? error : "Update failed";
-      // An update that cannot be verified is a dead end here; the repository
-      // link below stands ready for the disk image.
-      updateStatus.textContent = detail;
-      installUpdate.disabled = false;
-      checkUpdates.disabled = false;
-    });
+  checkUpdates.addEventListener("click", () => {
+    if (updateAction === "install") {
+      setUpdateButton("Downloading…", { busy: true, install: true });
+      // The app relaunches itself when this finishes, so success needs no message.
+      void api.installUpdate().catch((error: unknown) => {
+        const detail = typeof error === "string" ? error : "Update failed";
+        setUpdateButton("Update failed", { install: true, detail });
+      });
+      return;
+    }
+    void checkForUpdates(autoUpdate.checked);
   });
+
   openRepository.addEventListener("click", () => void api.openRepository());
   openProfile.addEventListener("click", () => void api.openUrl("https://x.com/vip_iny"));
   openDonate.addEventListener("click", () =>
@@ -508,9 +513,12 @@ function startSettings(api: DesktopApi): void {
   );
   openSite.addEventListener("click", () => void api.openUrl("https://vipinyadav.com"));
   api.onUpdateProgress(({ downloaded, total }) => {
-    updateStatus.textContent = total
-      ? `Downloading… ${Math.min(100, Math.round((downloaded / total) * 100))}%`
-      : "Downloading…";
+    setUpdateButton(
+      total
+        ? `Downloading… ${Math.min(100, Math.round((downloaded / total) * 100))}%`
+        : "Downloading…",
+      { busy: true, install: true },
+    );
   });
 
   void api.getSettings().then((settings) => {
