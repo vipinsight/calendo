@@ -406,7 +406,7 @@ function startSettings(api: DesktopApi): void {
   remindersAccess.addEventListener("click", async () => {
     remindersAccess.disabled = true;
     try {
-      await api.openRemindersPrivacy();
+      await api.requestRemindersAccess();
       await refreshRemindersAccess();
     } finally {
       remindersAccess.disabled = false;
