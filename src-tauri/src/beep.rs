@@ -79,12 +79,18 @@ pub fn system_output_volume() -> Option<f32> {
         return None;
     }
     read_volume(device, K_AUDIO_OBJECT_PROPERTY_ELEMENT_MASTER)
-        .or_else(|| read_volume(device, 1).zip(read_volume(device, 2)).map(|(a, b)| (a + b) / 2.0))
+        .or_else(|| {
+            read_volume(device, 1)
+                .zip(read_volume(device, 2))
+                .map(|(a, b)| (a + b) / 2.0)
+        })
         .or_else(|| read_volume(device, 1))
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn system_output_volume() -> Option<f32> { None }
+pub fn system_output_volume() -> Option<f32> {
+    None
+}
 
 pub fn beep_playback_volume() -> f32 {
     match system_output_volume() {
@@ -102,14 +108,24 @@ pub fn play_native(path: &std::path::Path, volume: f32) -> Result<(), String> {
     use std::ffi::CString;
     let encoded = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
     unsafe {
-        let string: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: encoded.as_ptr()];
-        if string.is_null() { return Err("Could not create beep path".into()); }
+        let string: *mut AnyObject =
+            msg_send![class!(NSString), stringWithUTF8String: encoded.as_ptr()];
+        if string.is_null() {
+            return Err("Could not create beep path".into());
+        }
         let allocated: *mut AnyObject = msg_send![class!(NSSound), alloc];
-        let sound: *mut AnyObject = msg_send![allocated, initWithContentsOfFile: string, byReference: Bool::YES];
-        if sound.is_null() { return Err("Could not load beep sound".into()); }
+        let sound: *mut AnyObject =
+            msg_send![allocated, initWithContentsOfFile: string, byReference: Bool::YES];
+        if sound.is_null() {
+            return Err("Could not load beep sound".into());
+        }
         let _: () = msg_send![sound, setVolume: volume.clamp(0.0, 1.0)];
         let played: Bool = msg_send![sound, play];
-        if played.as_bool() { Ok(()) } else { Err("Could not play beep sound".into()) }
+        if played.as_bool() {
+            Ok(())
+        } else {
+            Err("Could not play beep sound".into())
+        }
     }
 }
 
@@ -118,12 +134,23 @@ mod tests {
     use super::BEEP_VOLUME_CAP;
 
     fn playback(system: f32) -> f32 {
-        if system > 0.0 { (BEEP_VOLUME_CAP / system).min(1.0) } else { 1.0 }
+        if system > 0.0 {
+            (BEEP_VOLUME_CAP / system).min(1.0)
+        } else {
+            1.0
+        }
     }
 
     #[test]
     fn caps_effective_volume() {
-        for (system, expected) in [(1.0, 0.12), (0.5, 0.24), (0.25, 0.48), (0.12, 1.0), (0.1, 1.0), (0.0, 1.0)] {
+        for (system, expected) in [
+            (1.0, 0.12),
+            (0.5, 0.24),
+            (0.25, 0.48),
+            (0.12, 1.0),
+            (0.1, 1.0),
+            (0.0, 1.0),
+        ] {
             assert!((playback(system) - expected).abs() < f32::EPSILON);
         }
     }
