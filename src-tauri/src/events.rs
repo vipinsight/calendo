@@ -1,6 +1,6 @@
 //! Read-only integration with the user's macOS calendars.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// How the user answered the invitation. Events with no attendees — a plain
 /// entry the user owns — report `Confirmed`.
@@ -49,6 +49,36 @@ pub struct UpcomingEvent {
     pub kind: String,
     #[serde(default)]
     pub all_day: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DismissedOccurrence {
+    pub id: String,
+    pub end_at: i64,
+}
+
+pub fn prune_dismissed(list: &mut Vec<DismissedOccurrence>, now: i64) {
+    list.retain(|item| item.end_at > now);
+}
+
+pub fn dismiss_occurrence(
+    list: &mut Vec<DismissedOccurrence>,
+    id: String,
+    end_at: i64,
+    now: i64,
+) {
+    prune_dismissed(list, now);
+    if end_at <= now {
+        return;
+    }
+    if list
+        .iter()
+        .any(|item| item.id == id && item.end_at == end_at)
+    {
+        return;
+    }
+    list.push(DismissedOccurrence { id, end_at });
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -768,9 +798,10 @@ mod macos {
                 let event = events.objectAtIndex(index);
                 let start = unsafe { event.startDate().timeIntervalSince1970() };
                 let end = unsafe { event.endDate().timeIntervalSince1970() };
-                if unsafe { event.isAllDay() } || end <= start {
+                if end <= start {
                     continue;
                 }
+                let all_day = unsafe { event.isAllDay() };
                 if unsafe { event.status() } == objc2_event_kit::EKEventStatus::Canceled {
                     continue;
                 }
@@ -819,7 +850,7 @@ mod macos {
                     join_url,
                     response: own_response(&event),
                     kind: "event".into(),
-                    all_day: false,
+                    all_day,
                 });
             }
             if can_fetch_events(reminder_status_code(), reminders_granted_this_session()) {
@@ -937,7 +968,7 @@ mod macos {
         let end_ms = start_ms.saturating_add(7 * 24 * 60 * 60 * 1000);
         Ok(fetch_macos_range(start_ms, end_ms, hidden)?
             .into_iter()
-            .find(|event| !event.all_day))
+            .next())
     }
 
     pub fn open_reminder(id: &str) -> Result<(), String> {
@@ -1141,10 +1172,10 @@ pub fn open_meeting(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        access_action, access_granted, calendar_is_visible, can_fetch_events, event_show_url,
-        extract_join_url, reminder_show_url, reminder_span, response_for,
-        should_open_privacy_after_prompt, AccessAction, Response, CALENDAR_PRIVACY_URLS,
-        REMINDER_PRIVACY_URLS,
+        access_action, access_granted, calendar_is_visible, can_fetch_events, dismiss_occurrence,
+        event_show_url, extract_join_url, prune_dismissed, reminder_show_url, reminder_span,
+        response_for, should_open_privacy_after_prompt, AccessAction, DismissedOccurrence,
+        Response, CALENDAR_PRIVACY_URLS, REMINDER_PRIVACY_URLS,
     };
 
     #[test]
@@ -1246,6 +1277,23 @@ mod tests {
             &["work".into(), "birthdays".into()]
         ));
         assert!(calendar_is_visible(None, &["work".into()]));
+    }
+
+    #[test]
+    fn dismissed_occurrences_last_until_they_end() {
+        let mut list = Vec::new();
+        dismiss_occurrence(&mut list, "standup".into(), 1_000, 100);
+        dismiss_occurrence(&mut list, "standup".into(), 1_000, 200);
+        dismiss_occurrence(&mut list, "later".into(), 50, 100);
+        assert_eq!(
+            list,
+            vec![DismissedOccurrence {
+                id: "standup".into(),
+                end_at: 1_000,
+            }]
+        );
+        prune_dismissed(&mut list, 1_000);
+        assert!(list.is_empty());
     }
 
     #[test]

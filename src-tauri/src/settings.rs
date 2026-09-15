@@ -45,6 +45,7 @@ pub struct AppSettings {
     pub beep_on_the_hour: bool,
     pub show_upcoming_event: bool,
     pub upcoming_horizon_hours: u8,
+    pub upcoming_icon_lead_minutes: u16,
     pub hidden_calendar_ids: Vec<String>,
     pub auto_update: bool,
     pub theme: String,
@@ -64,7 +65,8 @@ impl Default for AppSettings {
             launch_at_login: false,
             beep_on_the_hour: false,
             show_upcoming_event: false,
-            upcoming_horizon_hours: 6,
+            upcoming_horizon_hours: 24,
+            upcoming_icon_lead_minutes: 0,
             hidden_calendar_ids: Vec::new(),
             auto_update: true,
             theme: "system".into(),
@@ -100,11 +102,14 @@ impl AppSettings {
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = base.theme.clone();
         }
-        if !matches!(
-            self.upcoming_horizon_hours,
-            1 | 2 | 4 | 6 | 8 | 12 | 24 | 48
-        ) {
+        if !matches!(self.upcoming_horizon_hours, 24 | 48) {
             self.upcoming_horizon_hours = base.upcoming_horizon_hours;
+        }
+        if !matches!(
+            self.upcoming_icon_lead_minutes,
+            0 | 10 | 15 | 30 | 60 | 120
+        ) {
+            self.upcoming_icon_lead_minutes = base.upcoming_icon_lead_minutes;
         }
         let mut days: Vec<u8> = self
             .highlight_weekdays
@@ -265,19 +270,33 @@ mod tests {
     }
 
     #[test]
-    fn keeps_a_look_ahead_of_two_hours_and_rejects_the_rest() {
+    fn keeps_a_look_ahead_of_one_or_two_days_and_rejects_the_rest() {
         let base = AppSettings::default();
         let mut input = base.clone();
-        input.upcoming_horizon_hours = 2;
-        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 2);
-        input.upcoming_horizon_hours = 3;
-        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 6);
-        input.upcoming_horizon_hours = 12;
-        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 12);
         input.upcoming_horizon_hours = 24;
+        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 24);
+        input.upcoming_horizon_hours = 6;
         assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 24);
         input.upcoming_horizon_hours = 48;
         assert_eq!(input.normalize(&base).upcoming_horizon_hours, 48);
+    }
+
+    #[test]
+    fn keeps_an_icon_lead_and_rejects_the_rest() {
+        let base = AppSettings::default();
+        let mut input = base.clone();
+        input.upcoming_icon_lead_minutes = 15;
+        assert_eq!(input.clone().normalize(&base).upcoming_icon_lead_minutes, 15);
+        input.upcoming_icon_lead_minutes = 20;
+        assert_eq!(input.clone().normalize(&base).upcoming_icon_lead_minutes, 0);
+        input.upcoming_icon_lead_minutes = 120;
+        assert_eq!(input.normalize(&base).upcoming_icon_lead_minutes, 120);
+    }
+
+    #[test]
+    fn defaults_the_look_ahead_to_the_rest_of_today() {
+        assert_eq!(AppSettings::default().upcoming_horizon_hours, 24);
+        assert_eq!(AppSettings::default().upcoming_icon_lead_minutes, 0);
     }
 
     #[test]
@@ -316,6 +335,7 @@ mod tests {
         assert!(body.contains("\"beepOnTheHour\""));
         assert!(body.contains("\"showUpcomingEvent\""));
         assert!(body.contains("\"upcomingHorizonHours\""));
+        assert!(body.contains("\"upcomingIconLeadMinutes\""));
         assert!(body.contains("\"hiddenCalendarIds\""));
         assert!(body.contains("\"weekStartsOn\""));
         assert!(body.contains("\"highlightWeekdays\""));

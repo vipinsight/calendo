@@ -6,15 +6,25 @@ export type MenuBarIconStyle = "filled" | "framed" | "calendar" | "none";
 export const ONE_DAY_HORIZON = 24;
 /** Stored as 48 hours; the look-ahead actually runs through the end of tomorrow. */
 export const TWO_DAYS_HORIZON = 48;
-export const UPCOMING_HORIZON_HOURS = [
-  1, 2, 4, 6, 8, 12, ONE_DAY_HORIZON, TWO_DAYS_HORIZON,
-] as const;
+export const UPCOMING_HORIZON_HOURS = [ONE_DAY_HORIZON, TWO_DAYS_HORIZON] as const;
 export type UpcomingHorizonHours = (typeof UPCOMING_HORIZON_HOURS)[number];
 
+/** 0 means the icon follows the upcoming list horizon. */
+export const ICON_LEAD_ALWAYS = 0;
+export const UPCOMING_ICON_LEAD_MINUTES = [
+  ICON_LEAD_ALWAYS, 10, 15, 30, 60, 120,
+] as const;
+export type UpcomingIconLeadMinutes = (typeof UPCOMING_ICON_LEAD_MINUTES)[number];
+
 export function upcomingHorizonLabel(hours: UpcomingHorizonHours): string {
-  if (hours === ONE_DAY_HORIZON) return "1 day";
-  if (hours === TWO_DAYS_HORIZON) return "2 days";
-  return hours === 1 ? "1 hour" : `${hours} hours`;
+  return hours === TWO_DAYS_HORIZON ? "2 days" : "1 day";
+}
+
+export function upcomingIconLeadLabel(minutes: UpcomingIconLeadMinutes): string {
+  if (minutes === ICON_LEAD_ALWAYS) return "Always show";
+  if (minutes === 60) return "1 hour before";
+  if (minutes === 120) return "2 hours before";
+  return `${minutes} minutes before`;
 }
 
 export type AppSettings = {
@@ -28,6 +38,8 @@ export type AppSettings = {
   beepOnTheHour: boolean;
   showUpcomingEvent: boolean;
   upcomingHorizonHours: UpcomingHorizonHours;
+  /** Minutes before start to show the events icon. 0 follows the list horizon. */
+  upcomingIconLeadMinutes: UpcomingIconLeadMinutes;
   /** EventKit identifiers the upcoming-event list should ignore. Empty shows every calendar. */
   hiddenCalendarIds: string[];
   autoUpdate: boolean;
@@ -118,7 +130,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   launchAtLogin: false,
   beepOnTheHour: false,
   showUpcomingEvent: false,
-  upcomingHorizonHours: 6,
+  upcomingHorizonHours: ONE_DAY_HORIZON,
+  upcomingIconLeadMinutes: ICON_LEAD_ALWAYS,
   hiddenCalendarIds: [],
   autoUpdate: true,
   theme: "system",
@@ -128,6 +141,7 @@ const ICON_IDS = new Set(MENU_BAR_ICONS.map((item) => item.id));
 const WEEK_START_IDS = new Set(WEEK_STARTS.map((item) => item.id));
 const THEMES = new Set<Theme>(["system", "light", "dark"]);
 const HORIZON_HOURS = new Set<number>(UPCOMING_HORIZON_HOURS);
+const ICON_LEAD_MINUTES = new Set<number>(UPCOMING_ICON_LEAD_MINUTES);
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
@@ -338,6 +352,9 @@ export function normalizeSettings(raw: unknown): AppSettings {
     upcomingHorizonHours: HORIZON_HOURS.has(input.upcomingHorizonHours as number)
       ? (input.upcomingHorizonHours as UpcomingHorizonHours)
       : DEFAULT_SETTINGS.upcomingHorizonHours,
+    upcomingIconLeadMinutes: ICON_LEAD_MINUTES.has(input.upcomingIconLeadMinutes as number)
+      ? (input.upcomingIconLeadMinutes as UpcomingIconLeadMinutes)
+      : DEFAULT_SETTINGS.upcomingIconLeadMinutes,
     hiddenCalendarIds:
       "hiddenCalendarIds" in input
         ? normalizeHiddenCalendarIds(input.hiddenCalendarIds)

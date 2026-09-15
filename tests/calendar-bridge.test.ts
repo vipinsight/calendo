@@ -13,6 +13,16 @@ it("passes calendar range arguments using Tauri's camelCase command convention",
   });
 });
 
+it("dismisses an upcoming occurrence with its end time", async () => {
+  const invoke = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("window", { __TAURI__: { core: { invoke } } });
+  await expect(api.dismissUpcomingEvent("event-1", 2000)).resolves.toBeUndefined();
+  expect(invoke).toHaveBeenCalledWith("dismiss_upcoming_event", {
+    id: "event-1",
+    endAt: 2000,
+  });
+});
+
 it("lists calendars through the same command bridge", async () => {
   const invoke = vi.fn().mockResolvedValue([]);
   vi.stubGlobal("window", { __TAURI__: { core: { invoke } } });

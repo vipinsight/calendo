@@ -1,10 +1,10 @@
-import { eventInUpcomingHorizon, eventStatus, upcomingHorizonEmpty, upcomingHorizonEnd, type EventResponse, type UpcomingEvent } from "../shared/events";
+import { eventInUpcomingHorizon, eventStatus, trayIconEvent, upcomingHorizonEmpty, upcomingHorizonEnd, type EventResponse, type UpcomingEvent } from "../shared/events";
 import { installTauriBridge } from "./host";
 import { lucideIcon } from "./icons";
 import { meetingBrand } from "../shared/meetings";
 import { meetingIcon } from "./brand-icons";
 import { markPopoverMaterial, popoverHeight } from "./popover-size";
-import { MapPin } from "lucide";
+import { EyeOff, MapPin } from "lucide";
 import { DEFAULT_SETTINGS, type AppSettings } from "../shared/settings";
 
 const api = installTauriBridge();
@@ -93,7 +93,11 @@ function eventDetails(event: UpcomingEvent, includeLocation = false): HTMLElemen
   return details.childElementCount ? details : null;
 }
 
-function featuredEvent(event: UpcomingEvent, now: number): HTMLElement[] {
+function featuredEvent(
+  event: UpcomingEvent,
+  now: number,
+  onDismiss?: () => void,
+): HTMLElement[] {
   const nodes: HTMLElement[] = [];
   const status = eventStatus(event, now);
   const heading = status.timing !== "ongoing"
@@ -107,6 +111,9 @@ function featuredEvent(event: UpcomingEvent, now: number): HTMLElement[] {
   nodes.push(row);
   const details = eventDetails(event, true);
   if (details) nodes.push(details);
+  if (onDismiss) {
+    nodes.push(detailRow(lucideIcon(EyeOff, 15), "Dismiss this event", onDismiss));
+  }
   return nodes;
 }
 
@@ -117,22 +124,53 @@ function syncHeight(): void {
 
 let loadRevision = 0;
 let horizonHours = DEFAULT_SETTINGS.upcomingHorizonHours;
+let iconLeadMinutes = DEFAULT_SETTINGS.upcomingIconLeadMinutes;
+
+function sameOccurrence(
+  left: Pick<UpcomingEvent, "id" | "endAt">,
+  right: Pick<UpcomingEvent, "id" | "endAt">,
+): boolean {
+  return left.id === right.id && left.endAt === right.endAt;
+}
 
 async function load(): Promise<void> {
   const revision = ++loadRevision;
   const now = Date.now();
   try {
-    const events = await api.getCalendarEvents(now, upcomingHorizonEnd(now, horizonHours));
+    const rangeEnd = Math.max(
+      upcomingHorizonEnd(now, horizonHours),
+      now + iconLeadMinutes * 60_000,
+    );
+    const [events, dismissed] = await Promise.all([
+      api.getCalendarEvents(now, rangeEnd),
+      api.getDismissedEvents().catch(() => []),
+    ]);
     if (revision !== loadRevision) return;
     const upcoming = events.filter((event) => eventInUpcomingHorizon(event, now, horizonHours));
-    if (!upcoming.length) { list.innerHTML = `<p class="empty">${upcomingHorizonEmpty(horizonHours)}</p>`; syncHeight(); return; }
-    const [next, ...rest] = upcoming as [UpcomingEvent, ...UpcomingEvent[]];
-    const nodes: HTMLElement[] = featuredEvent(next, now);
+    const featured = trayIconEvent(events, now, {
+      upcomingHorizonHours: horizonHours,
+      upcomingIconLeadMinutes: iconLeadMinutes,
+      dismissed,
+    });
+    if (!upcoming.length && !featured) {
+      list.innerHTML = `<p class="empty">${upcomingHorizonEmpty(horizonHours)}</p>`;
+      syncHeight();
+      return;
+    }
+    const nodes: HTMLElement[] = featured
+      ? featuredEvent(featured, now, () => {
+          void api.dismissUpcomingEvent(featured.id, featured.endAt).then(() => void load());
+        })
+      : [];
     let currentDay = "";
-    for (const event of rest) {
+    for (const event of upcoming) {
+      if (featured && sameOccurrence(event, featured)) continue;
       const date = new Date(event.startAt);
       const key = date.toDateString();
-      if (key !== currentDay) { currentDay = key; nodes.push(sectionLabel(dayLabel(date))); }
+      if (key !== currentDay) {
+        currentDay = key;
+        nodes.push(sectionLabel(dayLabel(date)));
+      }
       nodes.push(eventRow(event));
       const details = eventDetails(event);
       if (details) nodes.push(details);
@@ -153,19 +191,23 @@ void markPopoverMaterial(() => api.getPopoverMaterial());
 let hiddenCalendarKey = DEFAULT_SETTINGS.hiddenCalendarIds.join("\0");
 
 function applyEventSettings(
-  settings: Pick<AppSettings, "upcomingHorizonHours"> &
+  settings: Pick<AppSettings, "upcomingHorizonHours" | "upcomingIconLeadMinutes"> &
     Partial<Pick<AppSettings, "hiddenCalendarIds">>,
 ): void {
   const hiddenKey = (settings.hiddenCalendarIds ?? []).join("\0");
   const hoursChanged = settings.upcomingHorizonHours !== horizonHours;
+  const leadChanged = settings.upcomingIconLeadMinutes !== iconLeadMinutes;
   const hiddenChanged = hiddenKey !== hiddenCalendarKey;
   horizonHours = settings.upcomingHorizonHours;
+  iconLeadMinutes =
+    settings.upcomingIconLeadMinutes ?? DEFAULT_SETTINGS.upcomingIconLeadMinutes;
   hiddenCalendarKey = hiddenKey;
-  if (hoursChanged || hiddenChanged) void load();
+  if (hoursChanged || leadChanged || hiddenChanged) void load();
 }
 
 void api.getSettings().then(applyEventSettings);
 api.onSettingsChanged(applyEventSettings);
 api.onEventsShown(() => void load());
 api.onClockTick(() => void load());
+api.onEventDismissed(() => void load());
 void load();

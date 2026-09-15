@@ -98,6 +98,7 @@ struct AppState {
     /// mid-fade bumps the count and the pending hide stands down.
     calendar_fade: AtomicU64,
     events_fade: AtomicU64,
+    dismissed_events: Mutex<Vec<events::DismissedOccurrence>>,
 }
 
 /// How long after a blur-driven close a tray click still counts as the click
@@ -1063,6 +1064,44 @@ fn hidden_calendar_ids(app: &AppHandle) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn get_dismissed_events(
+    state: State<AppState>,
+) -> Result<Vec<events::DismissedOccurrence>, String> {
+    let now = unix_now_ms();
+    let mut list = state
+        .dismissed_events
+        .lock()
+        .map_err(|error| error.to_string())?;
+    events::prune_dismissed(&mut list, now);
+    Ok(list.clone())
+}
+
+#[tauri::command]
+fn dismiss_upcoming_event(
+    app: AppHandle,
+    state: State<AppState>,
+    id: String,
+    end_at: i64,
+) -> Result<(), String> {
+    let now = unix_now_ms();
+    let mut list = state
+        .dismissed_events
+        .lock()
+        .map_err(|error| error.to_string())?;
+    events::dismiss_occurrence(&mut list, id, end_at, now);
+    drop(list);
+    let _ = app.emit("event-dismissed", ());
+    Ok(())
+}
+
 #[tauri::command]
 async fn get_upcoming_event(app: AppHandle) -> Result<Option<events::UpcomingEvent>, String> {
     let hidden = hidden_calendar_ids(&app);
@@ -1299,6 +1338,7 @@ pub fn run() {
                 events_closed_at: Mutex::new(None),
                 calendar_fade: AtomicU64::new(0),
                 events_fade: AtomicU64::new(0),
+                dismissed_events: Mutex::new(Vec::new()),
             });
             set_launch_at_login(app.handle(), initial.launch_at_login);
             build_calendar_window(app.handle())?;
@@ -1328,6 +1368,8 @@ pub fn run() {
             open_repository,
             get_upcoming_event,
             get_calendar_events,
+            get_dismissed_events,
+            dismiss_upcoming_event,
             list_calendars,
             request_calendar_access,
             get_calendar_access,

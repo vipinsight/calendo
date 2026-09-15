@@ -5,7 +5,9 @@ import {
   HIGHLIGHT_DAYS,
   MENU_BAR_ICONS,
   UPCOMING_HORIZON_HOURS,
+  UPCOMING_ICON_LEAD_MINUTES,
   upcomingHorizonLabel,
+  upcomingIconLeadLabel,
   WEEK_STARTS,
   weekdayLetter,
   type AppSettings,
@@ -13,6 +15,7 @@ import {
   type MenuBarIconStyle,
   type Theme,
   type UpcomingHorizonHours,
+  type UpcomingIconLeadMinutes,
   type Weekday,
   type WeekStartsOn,
 } from "../shared/settings";
@@ -110,6 +113,7 @@ function startSettings(api: DesktopApi): void {
   const autoUpdate = requireElement<HTMLInputElement>("auto-update");
   const showUpcoming = requireElement<HTMLInputElement>("show-upcoming");
   const upcomingHorizon = requireElement<HTMLSelectElement>("upcoming-horizon");
+  const upcomingIconLead = requireElement<HTMLSelectElement>("upcoming-icon-lead");
   const calendarAccessStatus = requireElement<HTMLParagraphElement>("calendar-access-status");
   const calendarAccess = requireElement<HTMLButtonElement>("calendar-access");
   const calendarAccessRow = requireElement<HTMLElement>("calendar-access-row");
@@ -142,6 +146,13 @@ function startSettings(api: DesktopApi): void {
     UPCOMING_HORIZON_HOURS.map((hours) => ({
       value: String(hours),
       label: upcomingHorizonLabel(hours),
+    })),
+  );
+  fillSelect(
+    upcomingIconLead,
+    UPCOMING_ICON_LEAD_MINUTES.map((minutes) => ({
+      value: String(minutes),
+      label: upcomingIconLeadLabel(minutes),
     })),
   );
 
@@ -188,9 +199,11 @@ function startSettings(api: DesktopApi): void {
     }
   };
 
-  const paintHorizon = (enabled: boolean): void => {
-    upcomingHorizon.disabled = !enabled;
-    upcomingHorizon.closest(".row")?.classList.toggle("is-off", !enabled);
+  const paintUpcomingOptions = (enabled: boolean): void => {
+    for (const input of [upcomingHorizon, upcomingIconLead]) {
+      input.disabled = !enabled;
+      input.closest(".row")?.classList.toggle("is-off", !enabled);
+    }
   };
 
   let hiddenCalendarIds: string[] = [];
@@ -323,7 +336,8 @@ function startSettings(api: DesktopApi): void {
     autoUpdate.checked = settings.autoUpdate;
     showUpcoming.checked = settings.showUpcomingEvent;
     upcomingHorizon.value = String(settings.upcomingHorizonHours);
-    paintHorizon(settings.showUpcomingEvent);
+    upcomingIconLead.value = String(settings.upcomingIconLeadMinutes);
+    paintUpcomingOptions(settings.showUpcomingEvent);
     hiddenCalendarIds = settings.hiddenCalendarIds;
     paintCalendarSelection(settings.hiddenCalendarIds);
     theme.value = settings.theme;
@@ -340,6 +354,7 @@ function startSettings(api: DesktopApi): void {
     autoUpdate: autoUpdate.checked,
     showUpcomingEvent: showUpcoming.checked,
     upcomingHorizonHours: Number(upcomingHorizon.value) as UpcomingHorizonHours,
+    upcomingIconLeadMinutes: Number(upcomingIconLead.value) as UpcomingIconLeadMinutes,
     theme: theme.value as Theme,
   });
 
@@ -364,7 +379,7 @@ function startSettings(api: DesktopApi): void {
   form.addEventListener("change", () => {
     const patch = patchFromForm();
     applyTheme(patch.theme ?? "system");
-    paintHorizon(patch.showUpcomingEvent ?? false);
+    paintUpcomingOptions(patch.showUpcomingEvent ?? false);
     void api.updateSettings(patch);
   });
 

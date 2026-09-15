@@ -13,7 +13,7 @@ import {
   occupancyFromWeeks,
 } from "../shared/month-outline";
 import { menuBarLabel, highlightedColumnRuns, trayLabelKey, type AppSettings } from "../shared/settings";
-import { eventInUpcomingHorizon, eventStatus, eventTimeRange, type UpcomingEvent } from "../shared/events";
+import { eventStatus, eventTimeRange, trayIconEvent, upcomingHorizonEnd, type UpcomingEvent } from "../shared/events";
 import { lucideIcon } from "./icons";
 import { eventGlyphPng, framedGlyphPng } from "./tray-frame";
 import { markPopoverMaterial } from "./popover-size";
@@ -169,7 +169,12 @@ function startCalendar(api: DesktopApi): void {
     try {
       const monthStart = new Date(viewYear, viewMonth, 1);
       const monthEnd = new Date(viewYear, viewMonth + 1, 1);
-      const nextEvent = await api.getUpcomingEvent();
+      const now = Date.now();
+      const rangeEnd = Math.max(
+        upcomingHorizonEnd(now, current.upcomingHorizonHours),
+        now + current.upcomingIconLeadMinutes * 60_000,
+      );
+      const nextEvents = await api.getCalendarEvents(now, rangeEnd);
       let monthEvents: UpcomingEvent[] = [];
       try {
         monthEvents = await api.getCalendarEvents(monthStart.getTime(), monthEnd.getTime());
@@ -177,11 +182,13 @@ function startCalendar(api: DesktopApi): void {
         // Calendar grid decorations belong to the events popover and are optional.
       }
       if (request !== eventRequest) return;
-      const now = Date.now();
-      upcomingEvent =
-        nextEvent && eventInUpcomingHorizon(nextEvent, now, current.upcomingHorizonHours)
-          ? nextEvent
-          : null;
+      const dismissed = await api.getDismissedEvents().catch(() => []);
+      if (request !== eventRequest) return;
+      upcomingEvent = trayIconEvent(nextEvents, now, {
+        upcomingHorizonHours: current.upcomingHorizonHours,
+        upcomingIconLeadMinutes: current.upcomingIconLeadMinutes,
+        dismissed,
+      });
       calendarEvents = monthEvents;
       eventError = null;
     } catch (error) {
@@ -523,6 +530,9 @@ function startCalendar(api: DesktopApi): void {
     }
     refreshTray();
     render();
+    void refreshUpcoming();
+  });
+  api.onEventDismissed(() => {
     void refreshUpcoming();
   });
   api.onCalendarShown(() => {
