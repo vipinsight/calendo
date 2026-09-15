@@ -3,16 +3,16 @@
 //! There is no main window. The process is an accessory: a status item whose
 //! left click opens a month popover, and a settings window opened on demand.
 
-mod glass;
 mod beep;
 mod events;
+mod glass;
 mod settings;
 
 use serde::Serialize;
 use settings::{AppSettings, SettingsStore};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -168,7 +168,8 @@ fn fade_out_and_hide(app: &AppHandle, label: &'static str) {
     if !window.is_visible().unwrap_or(false) {
         return;
     }
-    let generation = fade_counter(&app.state::<AppState>(), label).fetch_add(1, Ordering::SeqCst) + 1;
+    let generation =
+        fade_counter(&app.state::<AppState>(), label).fetch_add(1, Ordering::SeqCst) + 1;
     glass::fade_out(&window);
 
     let handle = app.clone();
@@ -225,8 +226,12 @@ fn set_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
             return;
         };
         let _ = tray.with_inner_tray_icon(move |inner| {
-            let Some(item) = inner.ns_status_item() else { return; };
-            let Some(mtm) = MainThreadMarker::new() else { return; };
+            let Some(item) = inner.ns_status_item() else {
+                return;
+            };
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
             if let Some(button) = item.button(mtm) {
                 button.setHighlighted(highlighted);
             }
@@ -236,6 +241,122 @@ fn set_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
 
 #[cfg(not(target_os = "macos"))]
 fn set_status_item_highlight(_app: &AppHandle, _id: &str, _highlighted: bool) {}
+
+/// What a status-item click should do. Split out so the left/right split can
+/// be tested without standing up a menu bar extra.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrayClickIntent {
+    Toggle,
+    Menu,
+    Ignore,
+}
+
+fn tray_click_intent(button: MouseButton, state: MouseButtonState) -> TrayClickIntent {
+    match (button, state) {
+        (MouseButton::Left, MouseButtonState::Up) => TrayClickIntent::Toggle,
+        (MouseButton::Right, MouseButtonState::Down) => TrayClickIntent::Menu,
+        _ => TrayClickIntent::Ignore,
+    }
+}
+
+/// The NSMenu stolen off the status item. AppKit objects are main-thread
+/// only; this is only read from tray click handlers and setup, both of which
+/// run there.
+#[cfg(target_os = "macos")]
+#[derive(Clone)]
+struct TrayMenu(objc2::rc::Retained<objc2_app_kit::NSMenu>);
+
+// SAFETY: AppKit menus are main-thread only, and this value is only cloned
+// or read from setup and tray click handlers, which both run there.
+#[cfg(target_os = "macos")]
+unsafe impl Send for TrayMenu {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for TrayMenu {}
+
+#[cfg(target_os = "macos")]
+type TrayMenuShare = Arc<Mutex<Option<TrayMenu>>>;
+
+/// macOS 27 treats a resident `NSStatusItem` menu as the left-click action,
+/// so the overlay never sees the click and the Settings/Quit menu opens
+/// instead of the popover. Keep the menu off the item except while a
+/// right-click presents it. See tauri-apps/tray-icon#355.
+#[cfg(target_os = "macos")]
+fn unbind_status_item_menu(tray: &tauri::tray::TrayIcon) {
+    let _ = tray.with_inner_tray_icon(|inner| {
+        inner.set_show_menu_on_right_click(false);
+        if let Some(item) = inner.ns_status_item() {
+            item.setMenu(None);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn remember_status_item_menu(tray: &tauri::tray::TrayIcon, share: &TrayMenuShare) {
+    use objc2_foundation::MainThreadMarker;
+    let share = share.clone();
+    let _ = tray.with_inner_tray_icon(move |inner| {
+        inner.set_show_menu_on_right_click(false);
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        if let Ok(mut slot) = share.lock() {
+            if slot.is_none() {
+                *slot = item.menu(mtm).map(TrayMenu);
+            }
+        }
+        item.setMenu(None);
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn present_status_item_menu(tray: &tauri::tray::TrayIcon, menu: &TrayMenu) {
+    // `NSMenu` is not Send, and `with_inner_tray_icon` requires a Send
+    // closure, so the retained menu stays here and only a pointer crosses.
+    let menu_ptr = objc2::rc::Retained::as_ptr(&menu.0) as usize;
+    let _ = tray.with_inner_tray_icon(move |inner| {
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        // SAFETY: `menu` is retained in TrayMenuShare for the process
+        // lifetime, and this closure runs on the main thread.
+        let menu = unsafe { &*(menu_ptr as *const objc2_app_kit::NSMenu) };
+        #[allow(deprecated)]
+        item.popUpStatusItemMenu(menu);
+    });
+}
+
+fn handle_tray_click(
+    tray: &tauri::tray::TrayIcon,
+    event: TrayIconEvent,
+    #[cfg(target_os = "macos")] menu: &TrayMenuShare,
+    toggle: fn(&AppHandle, tauri::Rect),
+) {
+    let TrayIconEvent::Click {
+        button,
+        button_state,
+        rect,
+        ..
+    } = event
+    else {
+        return;
+    };
+    match tray_click_intent(button, button_state) {
+        TrayClickIntent::Toggle => toggle(tray.app_handle(), rect),
+        TrayClickIntent::Menu => {
+            #[cfg(target_os = "macos")]
+            {
+                let menu = menu.lock().ok().and_then(|guard| guard.clone());
+                if let Some(menu) = menu {
+                    present_status_item_menu(tray, &menu);
+                }
+            }
+        }
+        TrayClickIntent::Ignore => {}
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ScreenBounds {
@@ -468,7 +589,9 @@ fn show_events(app: &AppHandle, tray_rect: tauri::Rect) {
     close_calendar(app);
     cancel_fade(app, EVENTS_LABEL);
     position_events(app, tray_rect);
-    let Some(window) = app.get_webview_window(EVENTS_LABEL) else { return; };
+    let Some(window) = app.get_webview_window(EVENTS_LABEL) else {
+        return;
+    };
     let _ = window.show();
     let _ = window.set_focus();
     set_status_item_highlight(app, EVENT_TRAY_ID, true);
@@ -533,42 +656,53 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-icon.png"))?;
-    TrayIconBuilder::with_id(TRAY_ID)
+    let menu = build_tray_menu(app)?;
+    #[cfg(target_os = "macos")]
+    let status_menu: TrayMenuShare = Arc::new(Mutex::new(None));
+    let calendar = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .icon_as_template(true)
         .tooltip("Calendo")
-        .menu(&build_tray_menu(app)?)
+        .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| handle_menu_action(app, event.id().as_ref()))
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            } = event
-            {
-                toggle_calendar(tray.app_handle(), rect);
+        .on_tray_icon_event({
+            #[cfg(target_os = "macos")]
+            let status_menu = status_menu.clone();
+            move |tray, event| {
+                handle_tray_click(
+                    tray,
+                    event,
+                    #[cfg(target_os = "macos")]
+                    &status_menu,
+                    toggle_calendar,
+                );
             }
         })
         .build(app)?;
+    #[cfg(target_os = "macos")]
+    remember_status_item_menu(&calendar, &status_menu);
     let event_tray = TrayIconBuilder::with_id(EVENT_TRAY_ID)
         .tooltip("Upcoming event")
-        .menu(&build_tray_menu(app)?)
+        .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| handle_menu_action(app, event.id().as_ref()))
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            } = event
-            {
-                toggle_events(tray.app_handle(), rect);
+        .on_tray_icon_event({
+            #[cfg(target_os = "macos")]
+            let status_menu = status_menu.clone();
+            move |tray, event| {
+                handle_tray_click(
+                    tray,
+                    event,
+                    #[cfg(target_os = "macos")]
+                    &status_menu,
+                    toggle_events,
+                );
             }
         })
         .build(app)?;
+    #[cfg(target_os = "macos")]
+    remember_status_item_menu(&event_tray, &status_menu);
     let _ = event_tray.set_visible(false);
     Ok(())
 }
@@ -580,10 +714,8 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
         .lock()
         .map(|store| store.value())
         .unwrap_or_default();
-    let (initial_width, initial_height) = calendar_window_size(
-        initial.show_week_numbers,
-        initial.show_upcoming_event,
-    );
+    let (initial_width, initial_height) =
+        calendar_window_size(initial.show_week_numbers, initial.show_upcoming_event);
     let window =
         WebviewWindowBuilder::new(app, CALENDAR_LABEL, WebviewUrl::App("calendar.html".into()))
             .title("Calendo")
@@ -627,20 +759,21 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
-    let window = WebviewWindowBuilder::new(app, EVENTS_LABEL, WebviewUrl::App("events.html".into()))
-        .title("Upcoming Events")
-        .inner_size(EVENTS_WIDTH, EVENTS_FLOOR)
-        .decorations(false)
-        .transparent(true)
-        .shadow(true)
-        .resizable(false)
-        .always_on_top(true)
-        .visible_on_all_workspaces(true)
-        .skip_taskbar(true)
-        .accept_first_mouse(true)
-        .visible(false)
-        .focused(false)
-        .build()?;
+    let window =
+        WebviewWindowBuilder::new(app, EVENTS_LABEL, WebviewUrl::App("events.html".into()))
+            .title("Upcoming Events")
+            .inner_size(EVENTS_WIDTH, EVENTS_FLOOR)
+            .decorations(false)
+            .transparent(true)
+            .shadow(true)
+            .resizable(false)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .skip_taskbar(true)
+            .accept_first_mouse(true)
+            .visible(false)
+            .focused(false)
+            .build()?;
     glass::apply_calendar_glass(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
@@ -741,10 +874,8 @@ fn update_settings(
     {
         if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
             if window.is_visible().unwrap_or(false) {
-                let (width, height) = calendar_window_size(
-                    saved.show_week_numbers,
-                    saved.show_upcoming_event,
-                );
+                let (width, height) =
+                    calendar_window_size(saved.show_week_numbers, saved.show_upcoming_event);
                 let _ = window.set_size(Size::Logical(LogicalSize::new(width, height)));
             }
         }
@@ -802,14 +933,23 @@ fn set_tray_label(
 }
 
 #[tauri::command]
-fn set_event_tray_label(app: AppHandle, title: Option<String>, image: Option<Vec<u8>>, visible: bool) {
+fn set_event_tray_label(
+    app: AppHandle,
+    title: Option<String>,
+    image: Option<Vec<u8>>,
+    visible: bool,
+) {
     let _ = app.clone().run_on_main_thread(move || {
-        let Some(tray) = app.tray_by_id(EVENT_TRAY_ID) else { return; };
+        let Some(tray) = app.tray_by_id(EVENT_TRAY_ID) else {
+            return;
+        };
         if !visible {
             let _ = tray.set_visible(false);
             return;
         }
         let _ = tray.set_visible(true);
+        #[cfg(target_os = "macos")]
+        unbind_status_item_menu(&tray);
         if let Some(data) = image.as_deref() {
             if let Ok(icon) = tauri::image::Image::from_bytes(data) {
                 let _ = tray.set_icon_with_as_template(Some(icon), true);
@@ -824,7 +964,8 @@ fn set_event_tray_label(app: AppHandle, title: Option<String>, image: Option<Vec
 fn beep(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let path = app.path()
+        let path = app
+            .path()
             .resolve("resources/beep.mp3", tauri::path::BaseDirectory::Resource)
             .map_err(|error| error.to_string())?;
         beep::play_native(&path, beep::beep_playback_volume())?;
@@ -1002,7 +1143,9 @@ async fn request_reminders_access(app: AppHandle) -> Result<bool, String> {
         let granted = receiver
             .recv_timeout(Duration::from_secs(180))
             .map_err(|_| "Reminders access request timed out. Try again.".to_string())??;
-        on_main(&waiting, move || events::finish_reminders_access_request(granted))?;
+        on_main(&waiting, move || {
+            events::finish_reminders_access_request(granted)
+        })?;
         Ok(granted)
     })
     .await
@@ -1255,8 +1398,7 @@ mod tests {
 
     #[test]
     fn sits_under_the_tray_on_a_1x_display_above_the_laptop() {
-        let (x, y, placement) =
-            popover_origin(500.0, -1080.0, 40.0, 24.0, 340.0, 326.0, EXTERNAL);
+        let (x, y, placement) = popover_origin(500.0, -1080.0, 40.0, 24.0, 340.0, 326.0, EXTERNAL);
         assert_eq!(x, 350.0);
         assert_eq!(y, -1056.0);
         assert_eq!(placement, PopoverPlacement::Below);
@@ -1287,8 +1429,7 @@ mod tests {
 
     #[test]
     fn stays_on_the_tray_screen_when_the_icon_is_near_the_edge() {
-        let (x, y, placement) =
-            popover_origin(-180.0, -1080.0, 40.0, 24.0, 340.0, 326.0, EXTERNAL);
+        let (x, y, placement) = popover_origin(-180.0, -1080.0, 40.0, 24.0, 340.0, 326.0, EXTERNAL);
         assert_eq!(x, EXTERNAL.x + 8.0);
         assert_eq!(y, -1056.0);
         assert_eq!(placement, PopoverPlacement::Below);
@@ -1308,5 +1449,29 @@ mod tests {
     #[test]
     fn caret_stays_inside_the_card_near_a_corner() {
         assert_eq!(caret_offset(8.0, 300.0, 8.0, 24.0), 22.0);
+    }
+
+    #[test]
+    fn left_click_opens_the_popover_not_the_menu() {
+        assert_eq!(
+            tray_click_intent(MouseButton::Left, MouseButtonState::Up),
+            TrayClickIntent::Toggle
+        );
+        assert_eq!(
+            tray_click_intent(MouseButton::Left, MouseButtonState::Down),
+            TrayClickIntent::Ignore
+        );
+    }
+
+    #[test]
+    fn right_click_opens_the_menu() {
+        assert_eq!(
+            tray_click_intent(MouseButton::Right, MouseButtonState::Down),
+            TrayClickIntent::Menu
+        );
+        assert_eq!(
+            tray_click_intent(MouseButton::Right, MouseButtonState::Up),
+            TrayClickIntent::Ignore
+        );
     }
 }
