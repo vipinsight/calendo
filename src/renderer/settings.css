@@ -580,33 +580,37 @@ input[type="checkbox"][switch] {
 .about-foot {
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  gap: 10px 16px;
+  flex-wrap: nowrap;
+  gap: 16px;
   align-items: center;
   justify-content: space-between;
 }
 
 .about-updates {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
+  min-width: 0;
 }
 
 .about-updates .action {
   margin-top: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.about-updates .about-version {
-  margin: 0;
+.about-updates .action:disabled {
+  opacity: 0.55;
 }
 
 .about-legal {
   display: flex;
+  flex: none;
   gap: 8px;
   align-items: center;
   margin: 0;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .about-legal .link {

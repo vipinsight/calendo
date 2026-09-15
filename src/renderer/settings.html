@@ -194,16 +194,23 @@
               <div class="row">
                 <div class="copy">
                   <label for="show-upcoming">Show upcoming in menu bar</label>
-                  <p>Calendar events and scheduled reminders share one list.</p>
+                  <p>Events and reminders share one list.</p>
                 </div>
                 <input id="show-upcoming" name="showUpcomingEvent" type="checkbox" switch />
               </div>
               <div class="row" id="upcoming-horizon-row">
                 <div class="copy">
-                  <label for="upcoming-horizon">Show events within</label>
-                  <p>Hours, the rest of today, or through tomorrow.</p>
+                  <label for="upcoming-horizon">Show events for</label>
+                  <p>The rest of today, or through tomorrow.</p>
                 </div>
                 <select id="upcoming-horizon" name="upcomingHorizonHours"></select>
+              </div>
+              <div class="row" id="upcoming-icon-lead-row">
+                <div class="copy">
+                  <label for="upcoming-icon-lead">Show upcoming events</label>
+                  <p>Always, or only shortly before the next one.</p>
+                </div>
+                <select id="upcoming-icon-lead" name="upcomingIconLeadMinutes"></select>
               </div>
             </div>
           </div>
@@ -282,11 +289,9 @@
             </div>
             <div class="about-foot">
               <div class="about-updates">
-                <button type="button" class="action" id="check-updates">Check for Updates</button>
-                <button type="button" class="action" id="install-update" hidden>
-                  Update and Restart
+                <button type="button" class="action" id="check-updates" aria-live="polite">
+                  Check for Updates
                 </button>
-                <p class="about-version" id="update-status" aria-live="polite"></p>
               </div>
               <p class="about-legal">
                 © 2026 Calendo

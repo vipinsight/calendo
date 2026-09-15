@@ -62,6 +62,72 @@ export function eventInUpcomingHorizon(
   return event.startAt <= upcomingHorizonEnd(now, hours);
 }
 
+const MINUTE_MS = 60_000;
+
+/** Timed options show from that lead until the event ends. 0 is unused. */
+export function eventInIconLead(
+  event: Pick<UpcomingEvent, "startAt" | "endAt">,
+  now: number,
+  minutes: number,
+): boolean {
+  if (event.endAt <= now) return false;
+  return event.startAt <= now + minutes * MINUTE_MS;
+}
+
+export type DismissedOccurrence = {
+  id: string;
+  endAt: number;
+};
+
+export function occurrenceIsDismissed(
+  event: Pick<UpcomingEvent, "id" | "endAt">,
+  dismissed: readonly DismissedOccurrence[],
+  now: number,
+): boolean {
+  return dismissed.some(
+    (item) => item.id === event.id && item.endAt === event.endAt && item.endAt > now,
+  );
+}
+
+/**
+ * Whether the events menu bar icon should count this item down.
+ */
+export function eventQualifiesForIcon(
+  event: Pick<UpcomingEvent, "startAt" | "endAt">,
+  now: number,
+  hours: number,
+  leadMinutes: number,
+): boolean {
+  if (leadMinutes <= 0) return eventInUpcomingHorizon(event, now, hours);
+  return eventInIconLead(event, now, leadMinutes);
+}
+
+export function trayIconEvent(
+  events: readonly UpcomingEvent[],
+  now: number,
+  options: {
+    upcomingHorizonHours: number;
+    upcomingIconLeadMinutes: number;
+    dismissed?: readonly DismissedOccurrence[];
+  },
+): UpcomingEvent | null {
+  const dismissed = options.dismissed ?? [];
+  for (const event of events) {
+    if (occurrenceIsDismissed(event, dismissed, now)) continue;
+    if (
+      eventQualifiesForIcon(
+        event,
+        now,
+        options.upcomingHorizonHours,
+        options.upcomingIconLeadMinutes,
+      )
+    ) {
+      return event;
+    }
+  }
+  return null;
+}
+
 export function upcomingHorizonEmpty(hours: number): string {
   if (hours === ONE_DAY_HORIZON) return "Nothing in the rest of today.";
   if (hours === TWO_DAYS_HORIZON) return "Nothing in the next two days.";

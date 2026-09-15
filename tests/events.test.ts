@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   endOfTomorrow,
+  eventInIconLead,
   eventInUpcomingHorizon,
+  eventQualifiesForIcon,
   eventStatus,
   eventTimeRange,
+  trayIconEvent,
   upcomingHorizonEmpty,
   upcomingHorizonEnd,
   type UpcomingEvent,
@@ -138,5 +141,70 @@ describe("upcoming look-ahead", () => {
   it("ends the fetch window after the chosen hours", () => {
     expect(upcomingHorizonEnd(now, 4) - now).toBe(4 * 3_600_000);
     expect(upcomingHorizonEnd(now, 12) - now).toBe(12 * 3_600_000);
+  });
+});
+
+describe("events icon lead", () => {
+  const now = Date.UTC(2026, 8, 9, 10, 0);
+  const later = {
+    ...event,
+    id: "event-2",
+    title: "Wrap-up",
+    startAt: Date.UTC(2026, 8, 9, 10, 20),
+    endAt: Date.UTC(2026, 8, 9, 10, 50),
+  };
+
+  it("hides a meeting two hours out when the icon waits 15 minutes", () => {
+    expect(eventInIconLead(event, Date.UTC(2026, 8, 9, 8, 30), 15)).toBe(false);
+    expect(eventQualifiesForIcon(event, Date.UTC(2026, 8, 9, 8, 30), 24, 15)).toBe(false);
+  });
+
+  it("shows the icon 15 minutes before, through the meeting, then hides it", () => {
+    expect(eventInIconLead(event, Date.UTC(2026, 8, 9, 10, 15), 15)).toBe(true);
+    expect(eventInIconLead(event, Date.UTC(2026, 8, 9, 10, 40), 15)).toBe(true);
+    expect(eventInIconLead(event, Date.UTC(2026, 8, 9, 11, 0), 15)).toBe(false);
+  });
+
+  it("still shows anything in the list horizon when the icon is always on", () => {
+    expect(eventQualifiesForIcon(event, Date.UTC(2026, 8, 9, 8, 30), 6, 0)).toBe(true);
+    expect(eventQualifiesForIcon(event, Date.UTC(2026, 8, 9, 3, 0), 6, 0)).toBe(false);
+  });
+
+  it("counts all-day reminders on the icon like timed events", () => {
+    const reminder = {
+      ...event,
+      kind: "reminder" as const,
+      allDay: true,
+      startAt: Date.UTC(2026, 8, 9, 0, 0),
+      endAt: Date.UTC(2026, 8, 9, 23, 0),
+    };
+    expect(eventQualifiesForIcon(reminder, now, 24, 0)).toBe(true);
+    expect(eventQualifiesForIcon(reminder, Date.UTC(2026, 8, 8, 10, 0), 24, 15)).toBe(false);
+    expect(trayIconEvent([reminder, event], now, { upcomingHorizonHours: 24, upcomingIconLeadMinutes: 0 })).toBe(
+      reminder,
+    );
+  });
+
+  it("counts down the next qualifying event after one is dismissed", () => {
+    expect(trayIconEvent([event, later], now, { upcomingHorizonHours: 24, upcomingIconLeadMinutes: 30 })).toBe(
+      event,
+    );
+    expect(
+      trayIconEvent([event, later], now, {
+        upcomingHorizonHours: 24,
+        upcomingIconLeadMinutes: 30,
+        dismissed: [{ id: event.id, endAt: event.endAt }],
+      }),
+    ).toBe(later);
+  });
+
+  it("leaves the list horizon alone when the icon uses a shorter lead", () => {
+    const far = {
+      ...event,
+      startAt: Date.UTC(2026, 8, 9, 12, 0),
+      endAt: Date.UTC(2026, 8, 9, 12, 30),
+    };
+    expect(eventInUpcomingHorizon(far, now, 24)).toBe(true);
+    expect(eventQualifiesForIcon(far, now, 24, 15)).toBe(false);
   });
 });

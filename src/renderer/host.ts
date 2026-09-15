@@ -1,5 +1,5 @@
 import type { AppSettings, CalendarInfo } from "../shared/settings";
-import type { UpcomingEvent } from "../shared/events";
+import type { DismissedOccurrence, UpcomingEvent } from "../shared/events";
 
 /** An empty version means the running build is current. */
 export type UpdateOffer = { version: string; notes: string };
@@ -27,6 +27,8 @@ export type DesktopApi = {
   beep: () => Promise<void>;
   getUpcomingEvent: () => Promise<UpcomingEvent | null>;
   getCalendarEvents: (startAt: number, endAt: number) => Promise<UpcomingEvent[]>;
+  getDismissedEvents: () => Promise<DismissedOccurrence[]>;
+  dismissUpcomingEvent: (id: string, endAt: number) => Promise<void>;
   listCalendars: () => Promise<CalendarInfo[]>;
   requestCalendarAccess: () => Promise<boolean>;
   getCalendarAccess: () => Promise<boolean>;
@@ -55,6 +57,7 @@ export type DesktopApi = {
   onEventsShown: (listener: () => void) => () => void;
   onCalendarHidden: (listener: () => void) => () => void;
   onClockTick: (listener: () => void) => () => void;
+  onEventDismissed: (listener: () => void) => () => void;
 };
 
 function maybeTauri(): TauriGlobal | null {
@@ -101,6 +104,9 @@ export const api: DesktopApi = {
   getUpcomingEvent: () => invoke<UpcomingEvent | null>("get_upcoming_event"),
   getCalendarEvents: (startAt, endAt) =>
     invoke<UpcomingEvent[]>("get_calendar_events", { startAt, endAt }),
+  getDismissedEvents: () => invoke<DismissedOccurrence[]>("get_dismissed_events"),
+  dismissUpcomingEvent: (id, endAt) =>
+    invoke<void>("dismiss_upcoming_event", { id, endAt }),
   listCalendars: () => invoke<CalendarInfo[]>("list_calendars"),
   requestCalendarAccess: () => invoke<boolean>("request_calendar_access"),
   getCalendarAccess: () => invoke<boolean>("get_calendar_access"),
@@ -131,6 +137,7 @@ export const api: DesktopApi = {
   onEventsShown: (listener) => subscribe<void>("events-shown", listener),
   onCalendarHidden: (listener) => subscribe<void>("calendar-hidden", listener),
   onClockTick: (listener) => subscribe<void>("clock-tick", listener),
+  onEventDismissed: (listener) => subscribe<void>("event-dismissed", listener),
 };
 
 export function installTauriBridge(): DesktopApi {

@@ -12,6 +12,8 @@ import {
   trayLabelKey,
   normalizeHiddenCalendarIds,
   normalizeSettings,
+  upcomingHorizonLabel,
+  upcomingIconLeadLabel,
 } from "../src/shared/settings";
 
 describe("normalizeSettings", () => {
@@ -31,7 +33,8 @@ describe("normalizeSettings", () => {
       launchAtLogin: true,
       beepOnTheHour: true,
       showUpcomingEvent: true,
-      upcomingHorizonHours: 4,
+      upcomingHorizonHours: 48,
+      upcomingIconLeadMinutes: 15,
       hiddenCalendarIds: ["work"],
       theme: "dark",
     });
@@ -44,7 +47,8 @@ describe("normalizeSettings", () => {
     expect(result.launchAtLogin).toBe(true);
     expect(result.beepOnTheHour).toBe(true);
     expect(result.showUpcomingEvent).toBe(true);
-    expect(result.upcomingHorizonHours).toBe(4);
+    expect(result.upcomingHorizonHours).toBe(48);
+    expect(result.upcomingIconLeadMinutes).toBe(15);
     expect(result.hiddenCalendarIds).toEqual(["work"]);
     expect(result.theme).toBe("dark");
   });
@@ -109,13 +113,29 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ autoUpdate: false }).autoUpdate).toBe(false);
   });
 
-  it("looks six hours ahead unless an offered horizon is stored", () => {
-    expect(normalizeSettings({}).upcomingHorizonHours).toBe(6);
-    expect(normalizeSettings({ upcomingHorizonHours: 2 }).upcomingHorizonHours).toBe(2);
-    expect(normalizeSettings({ upcomingHorizonHours: 3 }).upcomingHorizonHours).toBe(6);
-    expect(normalizeSettings({ upcomingHorizonHours: 12 }).upcomingHorizonHours).toBe(12);
+  it("looks through the rest of today unless two days are stored", () => {
+    expect(normalizeSettings({}).upcomingHorizonHours).toBe(24);
+    expect(normalizeSettings({ upcomingHorizonHours: 2 }).upcomingHorizonHours).toBe(24);
+    expect(normalizeSettings({ upcomingHorizonHours: 6 }).upcomingHorizonHours).toBe(24);
+    expect(normalizeSettings({ upcomingHorizonHours: 12 }).upcomingHorizonHours).toBe(24);
     expect(normalizeSettings({ upcomingHorizonHours: 24 }).upcomingHorizonHours).toBe(24);
     expect(normalizeSettings({ upcomingHorizonHours: 48 }).upcomingHorizonHours).toBe(48);
+  });
+
+  it("keeps the events icon visible unless a lead time is stored", () => {
+    expect(normalizeSettings({}).upcomingIconLeadMinutes).toBe(0);
+    expect(normalizeSettings({ upcomingIconLeadMinutes: 15 }).upcomingIconLeadMinutes).toBe(15);
+    expect(normalizeSettings({ upcomingIconLeadMinutes: 20 }).upcomingIconLeadMinutes).toBe(0);
+    expect(normalizeSettings({ upcomingIconLeadMinutes: 120 }).upcomingIconLeadMinutes).toBe(120);
+  });
+
+  it("names the icon lead and list horizon the way Settings shows them", () => {
+    expect(upcomingHorizonLabel(24)).toBe("1 day");
+    expect(upcomingHorizonLabel(48)).toBe("2 days");
+    expect(upcomingIconLeadLabel(0)).toBe("Always show");
+    expect(upcomingIconLeadLabel(15)).toBe("15 minutes before");
+    expect(upcomingIconLeadLabel(60)).toBe("1 hour before");
+    expect(upcomingIconLeadLabel(120)).toBe("2 hours before");
   });
 
   it("migrates dim weekends off to no highlighted columns", () => {
