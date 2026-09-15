@@ -7,7 +7,6 @@ function setup(granted: boolean) {
   const api = {
     getCalendarAccess: vi.fn().mockResolvedValue(granted),
     requestCalendarAccess: vi.fn().mockResolvedValue(true),
-    openCalendarPrivacy: vi.fn().mockResolvedValue(undefined),
   };
   const elements = {
     status: { hidden: true, textContent: "" },
@@ -45,7 +44,6 @@ it("tells settings when access appears so the calendar list can load", async () 
   const api = {
     getCalendarAccess: vi.fn().mockResolvedValue(true),
     requestCalendarAccess: vi.fn().mockResolvedValue(true),
-    openCalendarPrivacy: vi.fn().mockResolvedValue(undefined),
   };
   const elements = {
     status: { hidden: true, textContent: "" },
@@ -59,33 +57,34 @@ it("tells settings when access appears so the calendar list can load", async () 
   expect(onGrantedChange).toHaveBeenCalledWith(true);
 });
 
-it("opens Calendar privacy settings from the allow button", async () => {
+it("requests native calendar access from the allow button so the system prompt can appear", async () => {
   const { api, elements } = setup(false);
   elements.button.dispatchEvent(new Event("click"));
-  await vi.waitFor(() => expect(api.openCalendarPrivacy).toHaveBeenCalled());
-  expect(api.requestCalendarAccess).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(api.requestCalendarAccess).toHaveBeenCalled());
 });
 
-it("ignores stale permission checks after opening privacy settings", async () => {
+it("ignores stale permission checks after a later request", async () => {
   const { api, elements, refresh } = setup(false);
   let resolve!: (value: boolean) => void;
   api.getCalendarAccess.mockReturnValue(new Promise<boolean>((done) => { resolve = done; }));
   const pending = refresh();
+  api.requestCalendarAccess.mockResolvedValue(true);
   elements.button.dispatchEvent(new Event("click"));
-  await vi.waitFor(() => expect(api.openCalendarPrivacy).toHaveBeenCalled());
+  await vi.waitFor(() => expect(api.requestCalendarAccess).toHaveBeenCalled());
   resolve(false);
   await pending;
-  expect(elements.row.hidden).toBe(false);
+  expect(elements.row.hidden).toBe(true);
   expect(elements.button.disabled).toBe(false);
 });
 
 it("picks up a System Settings grant without waiting for another focus event", async () => {
   vi.useFakeTimers();
   const { api, elements } = setup(false);
+  api.requestCalendarAccess.mockResolvedValue(false);
   elements.button.dispatchEvent(new Event("click"));
   await Promise.resolve();
   await Promise.resolve();
-  expect(api.openCalendarPrivacy).toHaveBeenCalled();
+  expect(api.requestCalendarAccess).toHaveBeenCalled();
   expect(elements.row.hidden).toBe(false);
   api.getCalendarAccess.mockResolvedValue(true);
   await vi.advanceTimersByTimeAsync(800);

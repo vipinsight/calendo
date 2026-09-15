@@ -73,24 +73,31 @@ pub(crate) fn calendar_is_visible(calendar_id: Option<&str>, hidden: &[String]) 
 pub(crate) enum AccessAction {
     Granted,
     RequestPrompt,
-    OpenSettings,
 }
 
 /// EventKit authorizationStatus values: NotDetermined=0, Restricted=1,
 /// Denied=2, FullAccess/Authorized=3, WriteOnly=4.
 ///
-/// WriteOnly still needs a full-access prompt. Denied/Restricted cannot
-/// prompt again, so those go to System Settings.
+/// Always ask EventKit unless already granted. System Settings has no add
+/// control for apps that have never requested TCC, so opening Privacy is a
+/// dead end for new users. Apple will not re-show the sheet after a denial,
+/// but requesting still registers the app so it can be toggled later.
 pub(crate) fn access_action(status: isize) -> AccessAction {
     match status {
-        0 | 4 => AccessAction::RequestPrompt,
         3 => AccessAction::Granted,
-        _ => AccessAction::OpenSettings,
+        _ => AccessAction::RequestPrompt,
     }
 }
 
 pub(crate) fn access_granted(status: isize) -> bool {
     matches!(access_action(status), AccessAction::Granted)
+}
+
+/// Apple will not re-show the EventKit sheet after Don't Allow. Opening the
+/// privacy pane only makes sense for that completed denial — not a grant,
+/// and not an EventKit error that left TCC untouched.
+pub(crate) fn should_open_privacy_after_prompt(result: &Result<bool, String>) -> bool {
+    matches!(result, Ok(false))
 }
 
 /// EventKit often keeps `authorizationStatus` on Denied and
@@ -143,16 +150,15 @@ pub(crate) fn reminder_span(due_ms: i64, all_day: bool) -> (i64, i64) {
     (due_ms, due_ms.saturating_add(length))
 }
 
+/// The first URL must be the Ventura+ Privacy & Security extension. A bare
+/// `com.apple.Settings.PrivacySecurity` pane id still launches Settings, but
+/// it lands on General and `openURL` reports success, so later URLs never run.
 pub(crate) const CALENDAR_PRIVACY_URLS: &[&str] = &[
-    "x-apple.systempreferences:com.apple.Settings.PrivacySecurity?Privacy_Calendars",
-    "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?Privacy_Calendars",
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Calendars",
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars",
 ];
 
 pub(crate) const REMINDER_PRIVACY_URLS: &[&str] = &[
-    "x-apple.systempreferences:com.apple.Settings.PrivacySecurity?Privacy_Reminders",
-    "x-apple.systempreferences:com.apple.Settings.PrivacySecurity.extension?Privacy_Reminders",
     "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Reminders",
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders",
 ];
@@ -370,8 +376,8 @@ mod macos {
     use objc2_app_kit::{NSApplication, NSColorSpace, NSWorkspace};
     use objc2_event_kit::{EKCalendar, EKEntityType, EKEventStore, EKReminder, EKSource};
     use objc2_foundation::{
-        MainThreadMarker, NSCalendar, NSDate, NSDateComponentUndefined, NSDateComponents, NSRunLoop,
-        NSString, NSURL,
+        MainThreadMarker, NSCalendar, NSDate, NSDateComponentUndefined, NSDateComponents,
+        NSRunLoop, NSString, NSURL,
     };
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -525,10 +531,6 @@ mod macos {
                 mark_granted();
                 reply(Ok(true));
             }
-            AccessAction::OpenSettings => {
-                activate_app();
-                reply(open_calendar_privacy_settings().map(|()| false));
-            }
             AccessAction::RequestPrompt => {
                 activate_app();
                 request_access(event_store(), reply);
@@ -591,10 +593,6 @@ mod macos {
             AccessAction::Granted => {
                 mark_reminders_granted();
                 reply(Ok(true));
-            }
-            AccessAction::OpenSettings => {
-                activate_app();
-                reply(open_reminder_privacy_settings().map(|()| false));
             }
             AccessAction::RequestPrompt => {
                 activate_app();
@@ -862,56 +860,59 @@ mod macos {
         };
         let hidden = hidden.to_vec();
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        let completion = RcBlock::new(move |reminders: *mut objc2_foundation::NSArray<EKReminder>| {
-            let mut found = Vec::new();
-            if let Some(list) = unsafe { reminders.as_ref() } {
-                for index in 0..list.count() {
-                    let reminder = list.objectAtIndex(index);
-                    if unsafe { reminder.isCompleted() } {
-                        continue;
+        let completion = RcBlock::new(
+            move |reminders: *mut objc2_foundation::NSArray<EKReminder>| {
+                let mut found = Vec::new();
+                if let Some(list) = unsafe { reminders.as_ref() } {
+                    for index in 0..list.count() {
+                        let reminder = list.objectAtIndex(index);
+                        if unsafe { reminder.isCompleted() } {
+                            continue;
+                        }
+                        let Some(components) = (unsafe { reminder.dueDateComponents() }) else {
+                            continue;
+                        };
+                        let Some((due_ms, all_day)) = reminder_due(&components) else {
+                            continue;
+                        };
+                        let raw_calendar: Option<Retained<EKCalendar>> =
+                            unsafe { reminder.calendar() };
+                        let calendar_id = raw_calendar.as_ref().map(|value| {
+                            let id_obj = unsafe { value.calendarIdentifier() };
+                            ns_string(&id_obj)
+                        });
+                        if !super::calendar_is_visible(calendar_id.as_deref(), &hidden) {
+                            continue;
+                        }
+                        let title_obj = unsafe { reminder.title() };
+                        let title = ns_string(&title_obj);
+                        let id_obj = unsafe { reminder.calendarItemIdentifier() };
+                        let id = ns_string(&id_obj);
+                        let (start_at, end_at) = super::reminder_span(due_ms, all_day);
+                        found.push(UpcomingEvent {
+                            id: format!("{}{id}", super::REMINDER_ID_PREFIX),
+                            title: if title.is_empty() {
+                                "Untitled reminder".into()
+                            } else {
+                                title
+                            },
+                            start_at,
+                            end_at,
+                            calendar: raw_calendar.map(|value| {
+                                let title = unsafe { value.title() };
+                                ns_string(&title)
+                            }),
+                            location: None,
+                            join_url: None,
+                            response: Response::Confirmed,
+                            kind: "reminder".into(),
+                            all_day,
+                        });
                     }
-                    let Some(components) = (unsafe { reminder.dueDateComponents() }) else {
-                        continue;
-                    };
-                    let Some((due_ms, all_day)) = reminder_due(&components) else {
-                        continue;
-                    };
-                    let raw_calendar: Option<Retained<EKCalendar>> = unsafe { reminder.calendar() };
-                    let calendar_id = raw_calendar.as_ref().map(|value| {
-                        let id_obj = unsafe { value.calendarIdentifier() };
-                        ns_string(&id_obj)
-                    });
-                    if !super::calendar_is_visible(calendar_id.as_deref(), &hidden) {
-                        continue;
-                    }
-                    let title_obj = unsafe { reminder.title() };
-                    let title = ns_string(&title_obj);
-                    let id_obj = unsafe { reminder.calendarItemIdentifier() };
-                    let id = ns_string(&id_obj);
-                    let (start_at, end_at) = super::reminder_span(due_ms, all_day);
-                    found.push(UpcomingEvent {
-                        id: format!("{}{id}", super::REMINDER_ID_PREFIX),
-                        title: if title.is_empty() {
-                            "Untitled reminder".into()
-                        } else {
-                            title
-                        },
-                        start_at,
-                        end_at,
-                        calendar: raw_calendar.map(|value| {
-                            let title = unsafe { value.title() };
-                            ns_string(&title)
-                        }),
-                        location: None,
-                        join_url: None,
-                        response: Response::Confirmed,
-                        kind: "reminder".into(),
-                        all_day,
-                    });
                 }
-            }
-            let _ = sender.send(found);
-        });
+                let _ = sender.send(found);
+            },
+        );
         unsafe {
             store.fetchRemindersMatchingPredicate_completion(&predicate, &completion);
         }
@@ -1141,9 +1142,9 @@ pub fn open_meeting(url: &str) -> Result<(), String> {
 mod tests {
     use super::{
         access_action, access_granted, calendar_is_visible, can_fetch_events, event_show_url,
-        extract_join_url, reminder_show_url, reminder_span, response_for, AccessAction,
-        Response,
-        CALENDAR_PRIVACY_URLS, REMINDER_PRIVACY_URLS,
+        extract_join_url, reminder_show_url, reminder_span, response_for,
+        should_open_privacy_after_prompt, AccessAction, Response, CALENDAR_PRIVACY_URLS,
+        REMINDER_PRIVACY_URLS,
     };
 
     #[test]
@@ -1171,26 +1172,40 @@ mod tests {
     }
 
     #[test]
-    fn denied_and_restricted_open_system_settings() {
-        assert_eq!(access_action(1), AccessAction::OpenSettings);
-        assert_eq!(access_action(2), AccessAction::OpenSettings);
+    fn denied_and_restricted_still_ask_for_access() {
+        assert_eq!(access_action(1), AccessAction::RequestPrompt);
+        assert_eq!(access_action(2), AccessAction::RequestPrompt);
         assert!(!access_granted(2));
     }
 
     #[test]
-    fn privacy_urls_cover_ventura_and_legacy_settings() {
-        assert!(CALENDAR_PRIVACY_URLS
-            .iter()
-            .any(|url| url.contains("PrivacySecurity")));
+    fn a_denial_opens_privacy_settings_a_grant_or_error_does_not() {
+        assert!(should_open_privacy_after_prompt(&Ok(false)));
+        assert!(!should_open_privacy_after_prompt(&Ok(true)));
+        assert!(!should_open_privacy_after_prompt(&Err(
+            "EventKit is unavailable".into()
+        )));
+    }
+
+    #[test]
+    fn privacy_urls_try_the_extension_pane_before_legacy_settings() {
+        assert_eq!(
+            CALENDAR_PRIVACY_URLS[0],
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Calendars"
+        );
+        assert_eq!(
+            REMINDER_PRIVACY_URLS[0],
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Reminders"
+        );
         assert!(CALENDAR_PRIVACY_URLS
             .iter()
             .any(|url| url.contains("preference.security")));
         assert!(CALENDAR_PRIVACY_URLS
             .iter()
-            .any(|url| url.ends_with("Privacy_Calendars")));
+            .all(|url| url.ends_with("Privacy_Calendars")));
         assert!(REMINDER_PRIVACY_URLS
             .iter()
-            .any(|url| url.ends_with("Privacy_Reminders")));
+            .all(|url| url.ends_with("Privacy_Reminders")));
     }
 
     #[test]
@@ -1214,7 +1229,9 @@ mod tests {
 
     #[test]
     fn reminder_links_open_the_reminders_item() {
-        assert!(reminder_show_url("ABC-123").starts_with("x-apple-reminderkit://REMCDReminder/ABC-123"));
+        assert!(
+            reminder_show_url("ABC-123").starts_with("x-apple-reminderkit://REMCDReminder/ABC-123")
+        );
         assert!(reminder_show_url("A:B").contains("A%3AB"));
         assert!(REMINDER_PRIVACY_URLS
             .iter()

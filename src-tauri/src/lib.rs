@@ -1101,7 +1101,9 @@ async fn request_calendar_access(app: AppHandle) -> Result<bool, String> {
             .recv_timeout(Duration::from_secs(180))
             .map_err(|_| "Calendar access request timed out. Try again.".to_string())??;
         on_main(&waiting, move || events::finish_access_request(granted))?;
-        if granted {
+        if events::should_open_privacy_after_prompt(&Ok(granted)) {
+            let _ = on_main(&waiting, events::open_calendar_privacy);
+        } else if granted {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
             waiting
                 .run_on_main_thread(move || {
@@ -1146,6 +1148,9 @@ async fn request_reminders_access(app: AppHandle) -> Result<bool, String> {
         on_main(&waiting, move || {
             events::finish_reminders_access_request(granted)
         })?;
+        if events::should_open_privacy_after_prompt(&Ok(granted)) {
+            let _ = on_main(&waiting, events::open_reminders_privacy);
+        }
         Ok(granted)
     })
     .await

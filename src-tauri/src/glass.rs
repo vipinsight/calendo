@@ -177,7 +177,8 @@ fn appearance_named(theme: &str) -> *mut AnyObject {
         return std::ptr::null_mut();
     };
     unsafe {
-        let string: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: name.as_ptr()];
+        let string: *mut AnyObject =
+            msg_send![class!(NSString), stringWithUTF8String: name.as_ptr()];
         if string.is_null() {
             return std::ptr::null_mut();
         }

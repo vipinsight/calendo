@@ -6,7 +6,7 @@ const GRANT_WATCH_MS = [800, 1600, 3200, 6400];
 export function bindCalendarAccess(
   api: Pick<
     DesktopApi,
-    "getCalendarAccess" | "requestCalendarAccess" | "openCalendarPrivacy"
+    "getCalendarAccess" | "requestCalendarAccess"
   >,
   elements: {
     status: Pick<HTMLElement, "hidden" | "textContent">;
@@ -65,7 +65,7 @@ export function bindCalendarAccess(
       const granted = await api.requestCalendarAccess();
       if (started !== revision) return;
       paint(granted);
-      if (!granted && toggle.checked) void watchForGrant(started);
+      if (!granted) void watchForGrant(started);
     } catch (error) {
       if (started === revision) showError(error);
     } finally {
@@ -73,23 +73,7 @@ export function bindCalendarAccess(
       button.disabled = false;
     }
   };
-  const openPrivacy = async (): Promise<void> => {
-    if (requesting) return;
-    const started = ++revision;
-    requesting = true;
-    button.disabled = true;
-    try {
-      await api.openCalendarPrivacy();
-      if (started !== revision) return;
-      void watchForGrant(started);
-    } catch (error) {
-      if (started === revision) showError(error);
-    } finally {
-      requesting = false;
-      button.disabled = false;
-    }
-  };
-  button.addEventListener("click", () => void openPrivacy());
+  button.addEventListener("click", () => void request());
   toggle.addEventListener("change", () => {
     if (toggle.checked) void request();
   });
