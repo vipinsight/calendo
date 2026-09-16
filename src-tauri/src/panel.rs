@@ -10,7 +10,6 @@ mod macos {
     use crate::glass;
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send, sel};
-    use objc2_app_kit::NSStatusWindowLevel;
     use objc2_foundation::NSPoint;
     use tauri::WebviewWindow;
 
@@ -41,7 +40,9 @@ mod macos {
                 let _: () = msg_send![ns_window, setFloatingPanel: Bool::YES];
             }
             let _: () = msg_send![ns_window, setHidesOnDeactivate: Bool::NO];
-            let _: () = msg_send![ns_window, setLevel: NSStatusWindowLevel];
+            // Mouse-moved events still have to reach the webview when this
+            // window is not key, or CSS cursors freeze on the last shape.
+            let _: () = msg_send![ns_window, setAcceptsMouseMovedEvents: Bool::YES];
         }
     }
 
