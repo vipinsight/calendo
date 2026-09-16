@@ -181,6 +181,10 @@ async function load(): Promise<void> {
           void api.dismissUpcomingEvent(featured.id, featured.endAt).then(() => void load());
         })
       : [];
+    // Join belongs to the one meeting you would be joining now: the featured
+    // event, or the ongoing or next one when the lead is holding it back.
+    // Later rows carry no link, so the wrong call is never one click away.
+    const joinable = featured ?? upcoming[0] ?? null;
     let currentDay = "";
     for (const event of upcoming) {
       if (featured && sameOccurrence(event, featured)) continue;
@@ -191,6 +195,7 @@ async function load(): Promise<void> {
         nodes.push(sectionLabel(dayLabel(date)));
       }
       nodes.push(eventRow(event));
+      if (!joinable || !sameOccurrence(event, joinable)) continue;
       const details = eventDetails(event);
       if (details) nodes.push(details);
     }
