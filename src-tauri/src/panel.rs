@@ -46,9 +46,11 @@ mod macos {
             return;
         };
         unsafe {
-            let window_class = class!(NSWindow);
+            // Wry's NSWindow subclass is larger than NSPanel, so swapping
+            // the class would be UB. The nonactivating bit and the private
+            // prevents-activation tag are enough to keep the front app key.
             let panel_class = class!(NSPanel);
-            if window_class.instance_size() == panel_class.instance_size() {
+            if ns_window.class().instance_size() == panel_class.instance_size() {
                 let _ = AnyObject::set_class(ns_window, panel_class);
             }
             let mask: usize = msg_send![ns_window, styleMask];
