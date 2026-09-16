@@ -13,7 +13,7 @@ import { lucideIcon } from "./icons";
 import { meetingBrand } from "../shared/meetings";
 import { meetingIcon } from "./brand-icons";
 import { markPopoverMaterial, popoverHeight } from "./popover-size";
-import { EyeOff, MapPin } from "lucide";
+import { CalendarDays, ChevronDown, EyeOff, MapPin } from "lucide";
 import { DEFAULT_SETTINGS, type AppSettings } from "../shared/settings";
 
 const api = installTauriBridge();
@@ -52,11 +52,15 @@ function openEvent(event: UpcomingEvent): void {
   void api.hideEvents();
 }
 
-function eventRow(event: UpcomingEvent): HTMLElement {
+function eventRow(
+  event: UpcomingEvent,
+  onActivate = () => openEvent(event),
+  options: { expandable?: boolean } = {},
+): HTMLElement {
   const row = document.createElement("div");
   row.className = "event interactive";
   row.setAttribute("role", "button");
-  row.addEventListener("click", () => openEvent(event));
+  row.addEventListener("click", onActivate);
   const dot = document.createElement("span");
   dot.className = `dot ${event.response}`;
   const title = document.createElement("span");
@@ -66,6 +70,13 @@ function eventRow(event: UpcomingEvent): HTMLElement {
   const response = RESPONSE_LABEL[event.response];
   row.title = response ? `${title.textContent} — ${response}` : title.textContent;
   row.append(dot, title);
+  if (options.expandable) {
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    caret.setAttribute("aria-hidden", "true");
+    caret.append(lucideIcon(ChevronDown, 13));
+    row.append(caret);
+  }
   return row;
 }
 
@@ -99,6 +110,50 @@ function eventDetails(event: UpcomingEvent, includeLocation = false): HTMLElemen
     details.append(detailRow(lucideIcon(MapPin, 15), event.location));
   }
   return details.childElementCount ? details : null;
+}
+
+/**
+ * What this one event offers: its meeting link and the calendar entry behind
+ * it. RSVP answers belong here too once EventKit can write them.
+ */
+function eventActions(event: UpcomingEvent): HTMLElement {
+  const actions = document.createElement("div");
+  actions.className = "detail";
+  actions.setAttribute("role", "group");
+  if (event.joinUrl) {
+    const url = event.joinUrl;
+    const { brand, label } = meetingBrand(url);
+    actions.append(detailRow(meetingIcon(brand, 13), label, () => {
+      void api.joinMeeting(url);
+      void api.hideEvents();
+    }));
+  }
+  actions.append(
+    detailRow(lucideIcon(CalendarDays, 15), "View in Calendar", () => openEvent(event)),
+  );
+  return actions;
+}
+
+/** One open row at a time, so the popover does not grow past the screen. */
+let expanded: { row: HTMLElement; actions: HTMLElement } | null = null;
+
+function collapseActions(): void {
+  if (!expanded) return;
+  expanded.actions.remove();
+  expanded.row.setAttribute("aria-expanded", "false");
+  expanded = null;
+}
+
+function toggleActions(row: HTMLElement, event: UpcomingEvent): void {
+  const wasOpen = expanded?.row === row;
+  collapseActions();
+  if (!wasOpen) {
+    const actions = eventActions(event);
+    row.after(actions);
+    row.setAttribute("aria-expanded", "true");
+    expanded = { row, actions };
+  }
+  syncHeight();
 }
 
 function featuredEvent(
@@ -164,6 +219,7 @@ async function load(): Promise<void> {
       api.getDismissedEvents().catch(() => []),
     ]);
     if (revision !== loadRevision) return;
+    collapseActions();
     const upcoming = visibleUpcomingEvents(events, now, horizonDays, filters);
     const featured = trayIconEvent(events, now, {
       upcomingHorizonDays: horizonDays,
@@ -181,10 +237,8 @@ async function load(): Promise<void> {
           void api.dismissUpcomingEvent(featured.id, featured.endAt).then(() => void load());
         })
       : [];
-    // Join belongs to the one meeting you would be joining now: the featured
-    // event, or the ongoing or next one when the lead is holding it back.
-    // Later rows carry no link, so the wrong call is never one click away.
-    const joinable = featured ?? upcoming[0] ?? null;
+    // Each row opens its own actions instead of carrying a Join of its own,
+    // so the link you click is always the meeting you were looking at.
     let currentDay = "";
     for (const event of upcoming) {
       if (featured && sameOccurrence(event, featured)) continue;
@@ -194,10 +248,9 @@ async function load(): Promise<void> {
         currentDay = key;
         nodes.push(sectionLabel(dayLabel(date)));
       }
-      nodes.push(eventRow(event));
-      if (!joinable || !sameOccurrence(event, joinable)) continue;
-      const details = eventDetails(event);
-      if (details) nodes.push(details);
+      const row = eventRow(event, () => toggleActions(row, event), { expandable: true });
+      row.setAttribute("aria-expanded", "false");
+      nodes.push(row);
     }
     list.replaceChildren(...nodes);
     syncHeight();

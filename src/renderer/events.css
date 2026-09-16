@@ -129,6 +129,16 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A quiet affordance: the row carries actions, one click away. */
+.event .caret {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  opacity: 0.4;
+  transition: transform 120ms ease;
+}
+.event[aria-expanded="true"] .caret { transform: rotate(180deg); }
+.event.interactive:hover .caret { opacity: 1; }
 .detail { display: flex; flex-direction: column; }
 .detail-row { padding-left: 10px; }
 .detail-row .glyph {
