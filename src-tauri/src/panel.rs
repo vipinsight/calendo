@@ -1,42 +1,17 @@
 //! Menu bar popovers that appear without activating Calendo.
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScreenRect {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-pub(crate) fn point_in_rect(x: f64, y: f64, rect: ScreenRect) -> bool {
-    x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height
-}
-
-/// A click on a visible popover stays put. Anywhere else dismisses, unless
-/// the calendar is pinned.
-pub(crate) fn outside_click_should_dismiss(
-    x: f64,
-    y: f64,
-    frames: &[ScreenRect],
-    pinned: bool,
-) -> bool {
-    if pinned || frames.is_empty() {
-        return false;
-    }
-    !frames
-        .iter()
-        .copied()
-        .any(|frame| point_in_rect(x, y, frame))
+/// Close when a popover is up, it is not pinned, and the click missed it.
+pub(crate) fn should_dismiss(over_popover: bool, pinned: bool, visible: bool) -> bool {
+    visible && !pinned && !over_popover
 }
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::ScreenRect;
     use crate::glass;
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send, sel};
     use objc2_app_kit::NSStatusWindowLevel;
-    use objc2_foundation::NSRect;
+    use objc2_foundation::NSPoint;
     use tauri::WebviewWindow;
 
     const NONACTIVATING_PANEL: usize = 1 << 7;
@@ -81,64 +56,79 @@ mod macos {
         }
     }
 
-    pub(crate) fn visible_frame(window: &WebviewWindow) -> Option<ScreenRect> {
-        if !window.is_visible().ok()? {
-            return None;
+    fn collect_window_numbers(ns_window: &AnyObject, numbers: &mut Vec<isize>) {
+        let visible: Bool = unsafe { msg_send![ns_window, isVisible] };
+        if !visible.as_bool() {
+            return;
         }
-        let ns_window = glass::window_object(window)?;
-        let frame: NSRect = unsafe { msg_send![ns_window, frame] };
-        Some(ScreenRect {
-            x: frame.origin.x,
-            y: frame.origin.y,
-            width: frame.size.width,
-            height: frame.size.height,
-        })
+        let number: isize = unsafe { msg_send![ns_window, windowNumber] };
+        if number != 0 {
+            numbers.push(number);
+        }
+        let children: *mut AnyObject = unsafe { msg_send![ns_window, childWindows] };
+        if children.is_null() {
+            return;
+        }
+        let count: usize = unsafe { msg_send![children, count] };
+        for index in 0..count {
+            let child: *mut AnyObject = unsafe { msg_send![children, objectAtIndex: index] };
+            if !child.is_null() {
+                collect_window_numbers(unsafe { &*child }, numbers);
+            }
+        }
     }
 
-    pub(crate) fn mouse_location() -> (f64, f64) {
-        let point: objc2_foundation::NSPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
-        (point.x, point.y)
+    pub(crate) fn visible_window_numbers(window: &WebviewWindow) -> Vec<isize> {
+        let Some(ns_window) = glass::window_object(window) else {
+            return Vec::new();
+        };
+        let mut numbers = Vec::new();
+        collect_window_numbers(ns_window, &mut numbers);
+        numbers
+    }
+
+    pub(crate) fn mouse_is_over(numbers: &[isize]) -> bool {
+        if numbers.is_empty() {
+            return false;
+        }
+        let point: NSPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
+        let hit: isize = unsafe {
+            msg_send![
+                class!(NSWindow),
+                windowNumberAtPoint: point,
+                belowWindowWithWindowNumber: 0isize
+            ]
+        };
+        hit != 0 && numbers.contains(&hit)
     }
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
-    as_nonactivating_popover, mouse_location, order_front_without_activating, visible_frame,
+    as_nonactivating_popover, mouse_is_over, order_front_without_activating, visible_window_numbers,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const POPOVER: ScreenRect = ScreenRect {
-        x: 100.0,
-        y: 700.0,
-        width: 264.0,
-        height: 296.0,
-    };
-
     #[test]
-    fn click_inside_the_popover_keeps_it_open() {
-        assert!(!outside_click_should_dismiss(
-            120.0,
-            800.0,
-            &[POPOVER],
-            false
-        ));
+    fn a_click_on_the_popover_keeps_it_open() {
+        assert!(!should_dismiss(true, false, true));
     }
 
     #[test]
-    fn click_outside_the_popover_dismisses_it() {
-        assert!(outside_click_should_dismiss(10.0, 10.0, &[POPOVER], false));
+    fn a_click_away_dismisses_it() {
+        assert!(should_dismiss(false, false, true));
     }
 
     #[test]
-    fn no_visible_popover_is_a_no_op() {
-        assert!(!outside_click_should_dismiss(10.0, 10.0, &[], false));
+    fn nothing_visible_is_a_no_op() {
+        assert!(!should_dismiss(false, false, false));
     }
 
     #[test]
     fn a_pinned_calendar_ignores_outside_clicks() {
-        assert!(!outside_click_should_dismiss(10.0, 10.0, &[POPOVER], true));
+        assert!(!should_dismiss(false, true, true));
     }
 }

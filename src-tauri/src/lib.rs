@@ -560,27 +560,28 @@ fn show_popover(window: &WebviewWindow) {
     }
 }
 
-/// The popover is no longer key, so blur cannot close it. A mouse-down
-/// anywhere except on the panel itself stands in.
+#[cfg(target_os = "macos")]
+fn popover_window_numbers(app: &AppHandle) -> Vec<isize> {
+    let mut numbers = Vec::new();
+    if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
+        numbers.extend(panel::visible_window_numbers(&window));
+    }
+    if let Some(window) = app.get_webview_window(EVENTS_LABEL) {
+        numbers.extend(panel::visible_window_numbers(&window));
+    }
+    numbers
+}
+
+/// Clicks in other apps. Clicks on the popover itself are local and must
+/// not go through here, or the calendar closes under the pointer.
 #[cfg(target_os = "macos")]
 fn dismiss_if_outside(app: &AppHandle) {
+    let numbers = popover_window_numbers(app);
     let pinned = app
         .state::<AppState>()
         .calendar_pinned
         .load(Ordering::SeqCst);
-    let mut frames = Vec::new();
-    if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
-        if let Some(frame) = panel::visible_frame(&window) {
-            frames.push(frame);
-        }
-    }
-    if let Some(window) = app.get_webview_window(EVENTS_LABEL) {
-        if let Some(frame) = panel::visible_frame(&window) {
-            frames.push(frame);
-        }
-    }
-    let (x, y) = panel::mouse_location();
-    if panel::outside_click_should_dismiss(x, y, &frames, pinned) {
+    if panel::should_dismiss(panel::mouse_is_over(&numbers), pinned, !numbers.is_empty()) {
         close_calendar(app);
         close_events(app);
     }
@@ -602,18 +603,6 @@ fn install_outside_click_dismiss(app: &AppHandle) {
         std::mem::forget(monitor);
     }
     std::mem::forget(global);
-
-    let local_app = app.clone();
-    let local = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        dismiss_if_outside(&local_app);
-        event.as_ptr()
-    });
-    if let Some(monitor) =
-        unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local) }
-    {
-        std::mem::forget(monitor);
-    }
-    std::mem::forget(local);
 }
 
 fn show_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
@@ -815,6 +804,13 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
             if state.ignore_calendar_blur.swap(false, Ordering::SeqCst) {
                 return;
             }
+            // Becoming key on an inside click can emit a spurious blur.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = handle.get_webview_window(CALENDAR_LABEL) {
+                if panel::mouse_is_over(&panel::visible_window_numbers(&window)) {
+                    return;
+                }
+            }
             close_calendar(&handle);
         }
         WindowEvent::CloseRequested { api, .. } => {
@@ -847,7 +843,15 @@ fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
     glass::apply_calendar_glass(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Focused(false) => close_events(&handle),
+        WindowEvent::Focused(false) => {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = handle.get_webview_window(EVENTS_LABEL) {
+                if panel::mouse_is_over(&panel::visible_window_numbers(&window)) {
+                    return;
+                }
+            }
+            close_events(&handle);
+        }
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             close_events(&handle);
