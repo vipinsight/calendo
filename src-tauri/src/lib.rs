@@ -85,7 +85,6 @@ const TRAY_CALENDAR: &[u8] = include_bytes!("../../icons/tray/calendar.png");
 
 struct AppState {
     settings: Mutex<SettingsStore>,
-    ignore_calendar_blur: AtomicBool,
     calendar_pinned: AtomicBool,
     /// Height of the display the events popover was last placed on, since a
     /// hidden window reports whichever screen it happens to rest on.
@@ -572,8 +571,9 @@ fn popover_window_numbers(app: &AppHandle) -> Vec<isize> {
     numbers
 }
 
-/// Clicks in other apps. Clicks on the popover itself are local and must
-/// not go through here, or the calendar closes under the pointer.
+/// Clicks in other apps. Clicks on the popover itself are local and never
+/// reach this monitor. Blur is ignored: showing without becoming key used
+/// to emit Focused(false) while the pointer was still on the icon.
 #[cfg(target_os = "macos")]
 fn dismiss_if_outside(app: &AppHandle) {
     let numbers = popover_window_numbers(app);
@@ -793,26 +793,6 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
 
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        // Closing on the spot, rather than after a delay, keeps the popover
-        // from being left visible but inactive — long enough for the glass to
-        // paint its subdued state before the window goes away.
-        WindowEvent::Focused(false) => {
-            let state = handle.state::<AppState>();
-            if state.calendar_pinned.load(Ordering::SeqCst) {
-                return;
-            }
-            if state.ignore_calendar_blur.swap(false, Ordering::SeqCst) {
-                return;
-            }
-            // Becoming key on an inside click can emit a spurious blur.
-            #[cfg(target_os = "macos")]
-            if let Some(window) = handle.get_webview_window(CALENDAR_LABEL) {
-                if panel::mouse_is_over(&panel::visible_window_numbers(&window)) {
-                    return;
-                }
-            }
-            close_calendar(&handle);
-        }
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             close_calendar(&handle);
@@ -843,15 +823,6 @@ fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
     glass::apply_calendar_glass(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Focused(false) => {
-            #[cfg(target_os = "macos")]
-            if let Some(window) = handle.get_webview_window(EVENTS_LABEL) {
-                if panel::mouse_is_over(&panel::visible_window_numbers(&window)) {
-                    return;
-                }
-            }
-            close_events(&handle);
-        }
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             close_events(&handle);
@@ -1404,7 +1375,6 @@ pub fn run() {
             let initial = store.value();
             app.manage(AppState {
                 settings: Mutex::new(store),
-                ignore_calendar_blur: AtomicBool::new(false),
                 calendar_pinned: AtomicBool::new(false),
                 events_screen_height: Mutex::new(EVENTS_FALLBACK_SCREEN),
                 calendar_closed_at: Mutex::new(None),
