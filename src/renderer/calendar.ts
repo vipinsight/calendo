@@ -537,7 +537,7 @@ function startCalendar(api: DesktopApi): void {
   });
   api.onCalendarShown(() => {
     refreshTray();
-    render({ focusGrid: true });
+    render();
     void refreshUpcoming();
   });
 }

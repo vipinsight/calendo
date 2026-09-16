@@ -6,6 +6,7 @@
 mod beep;
 mod events;
 mod glass;
+mod panel;
 mod settings;
 
 use serde::Serialize;
@@ -549,15 +550,80 @@ fn position_events(app: &AppHandle, tray_rect: tauri::Rect) {
     let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
 }
 
+fn show_popover(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    panel::order_front_without_activating(window);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// The popover is no longer key, so blur cannot close it. A mouse-down
+/// anywhere except on the panel itself stands in.
+#[cfg(target_os = "macos")]
+fn dismiss_if_outside(app: &AppHandle) {
+    let pinned = app
+        .state::<AppState>()
+        .calendar_pinned
+        .load(Ordering::SeqCst);
+    let mut frames = Vec::new();
+    if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
+        if let Some(frame) = panel::visible_frame(&window) {
+            frames.push(frame);
+        }
+    }
+    if let Some(window) = app.get_webview_window(EVENTS_LABEL) {
+        if let Some(frame) = panel::visible_frame(&window) {
+            frames.push(frame);
+        }
+    }
+    let (x, y) = panel::mouse_location();
+    if panel::outside_click_should_dismiss(x, y, &frames, pinned) {
+        close_calendar(app);
+        close_events(app);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn install_outside_click_dismiss(app: &AppHandle) {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask};
+
+    let mask = NSEventMask::LeftMouseDown.union(NSEventMask::RightMouseDown);
+    let global_app = app.clone();
+    let global = RcBlock::new(move |_event: NonNull<NSEvent>| {
+        dismiss_if_outside(&global_app);
+    });
+    if let Some(monitor) = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global) {
+        std::mem::forget(monitor);
+    }
+    std::mem::forget(global);
+
+    let local_app = app.clone();
+    let local = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        dismiss_if_outside(&local_app);
+        event.as_ptr()
+    });
+    if let Some(monitor) =
+        unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local) }
+    {
+        std::mem::forget(monitor);
+    }
+    std::mem::forget(local);
+}
+
 fn show_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
     close_events(app);
     cancel_fade(app, CALENDAR_LABEL);
     position_calendar(app, tray_rect);
     if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
-        let _ = window.show();
+        show_popover(&window);
         // Showing can let AppKit park the window on the previous screen.
         position_calendar(app, tray_rect);
-        let _ = window.set_focus();
     }
     set_status_item_highlight(app, TRAY_ID, true);
     let _ = app.emit("calendar-shown", ());
@@ -574,8 +640,9 @@ fn toggle_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
         .lock()
         .map(|closed| closed.is_some_and(|at| at.elapsed() < REOPEN_GUARD))
         .unwrap_or(false);
-    // This click is the one that closed it: the blur it caused got here
-    // first, and the popover may still be fading out.
+    // This click is the one that closed it: an outside mouse-down (or blur,
+    // if the popover had become key) got here first, and it may still be
+    // fading out.
     if just_closed {
         return;
     }
@@ -593,8 +660,7 @@ fn show_events(app: &AppHandle, tray_rect: tauri::Rect) {
     let Some(window) = app.get_webview_window(EVENTS_LABEL) else {
         return;
     };
-    let _ = window.show();
-    let _ = window.set_focus();
+    show_popover(&window);
     set_status_item_highlight(app, EVENT_TRAY_ID, true);
     let _ = window.emit("events-shown", ());
 }
@@ -732,7 +798,8 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
             .visible(false)
             .focused(false)
             .build()?;
-
+    #[cfg(target_os = "macos")]
+    panel::as_nonactivating_popover(&window);
     glass::apply_calendar_glass(&window);
 
     let handle = app.clone();
@@ -775,6 +842,8 @@ fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
             .visible(false)
             .focused(false)
             .build()?;
+    #[cfg(target_os = "macos")]
+    panel::as_nonactivating_popover(&window);
     glass::apply_calendar_glass(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
@@ -1346,6 +1415,8 @@ pub fn run() {
             build_settings_window(app.handle())?;
             apply_app_theme(app.handle(), &initial.theme);
             build_tray(app.handle())?;
+            #[cfg(target_os = "macos")]
+            install_outside_click_dismiss(app.handle());
             spawn_clock(app.handle().clone());
             spawn_auto_update(app.handle().clone());
             Ok(())
