@@ -113,47 +113,23 @@ function eventDetails(event: UpcomingEvent, includeLocation = false): HTMLElemen
 }
 
 /**
- * What this one event offers: its meeting link and the calendar entry behind
- * it. RSVP answers belong here too once EventKit can write them.
+ * The row's actions, as a real menu the window cannot clip: the meeting link
+ * and the calendar entry behind it. RSVP answers belong here too once
+ * EventKit can write them.
  */
-function eventActions(event: UpcomingEvent): HTMLElement {
-  const actions = document.createElement("div");
-  actions.className = "detail";
-  actions.setAttribute("role", "group");
-  if (event.joinUrl) {
-    const url = event.joinUrl;
-    const { brand, label } = meetingBrand(url);
-    actions.append(detailRow(meetingIcon(brand, 13), label, () => {
-      void api.joinMeeting(url);
-      void api.hideEvents();
-    }));
-  }
-  actions.append(
-    detailRow(lucideIcon(CalendarDays, 15), "View in Calendar", () => openEvent(event)),
-  );
-  return actions;
-}
-
-/** One open row at a time, so the popover does not grow past the screen. */
-let expanded: { row: HTMLElement; actions: HTMLElement } | null = null;
-
-function collapseActions(): void {
-  if (!expanded) return;
-  expanded.actions.remove();
-  expanded.row.setAttribute("aria-expanded", "false");
-  expanded = null;
-}
-
-function toggleActions(row: HTMLElement, event: UpcomingEvent): void {
-  const wasOpen = expanded?.row === row;
-  collapseActions();
-  if (!wasOpen) {
-    const actions = eventActions(event);
-    row.after(actions);
-    row.setAttribute("aria-expanded", "true");
-    expanded = { row, actions };
-  }
-  syncHeight();
+function showActions(row: HTMLElement, event: UpcomingEvent): void {
+  const box = row.getBoundingClientRect();
+  row.setAttribute("aria-expanded", "true");
+  void api
+    .showEventActions({
+      id: event.id,
+      joinUrl: event.joinUrl,
+      joinLabel: event.joinUrl ? meetingBrand(event.joinUrl).label : null,
+      // The menu hangs from the row's lower left, the way a disclosure would.
+      x: box.left,
+      y: box.bottom,
+    })
+    .finally(() => row.setAttribute("aria-expanded", "false"));
 }
 
 function featuredEvent(
@@ -219,7 +195,6 @@ async function load(): Promise<void> {
       api.getDismissedEvents().catch(() => []),
     ]);
     if (revision !== loadRevision) return;
-    collapseActions();
     const upcoming = visibleUpcomingEvents(events, now, horizonDays, filters);
     const featured = trayIconEvent(events, now, {
       upcomingHorizonDays: horizonDays,
@@ -248,7 +223,7 @@ async function load(): Promise<void> {
         currentDay = key;
         nodes.push(sectionLabel(dayLabel(date)));
       }
-      const row = eventRow(event, () => toggleActions(row, event), { expandable: true });
+      const row = eventRow(event, () => showActions(row, event), { expandable: true });
       row.setAttribute("aria-expanded", "false");
       nodes.push(row);
     }

@@ -38,6 +38,13 @@ export type DesktopApi = {
   openRemindersPrivacy: () => Promise<void>;
   joinMeeting: (url: string) => Promise<void>;
   openEvent: (id: string) => Promise<void>;
+  showEventActions: (options: {
+    id: string;
+    joinUrl: string | null;
+    joinLabel: string | null;
+    x: number;
+    y: number;
+  }) => Promise<void>;
   checkForUpdates: () => Promise<UpdateOffer>;
   installUpdate: () => Promise<void>;
   openRepository: () => Promise<void>;
@@ -117,6 +124,8 @@ export const api: DesktopApi = {
   openRemindersPrivacy: () => invoke<void>("open_reminders_privacy"),
   joinMeeting: (url) => invoke<void>("join_meeting", { url }),
   openEvent: (id) => invoke<void>("open_event", { id }),
+  showEventActions: ({ id, joinUrl, joinLabel, x, y }) =>
+    invoke<void>("show_event_actions", { id, joinUrl, joinLabel, x, y }),
   checkForUpdates: () => invoke<UpdateOffer>("check_for_updates"),
   installUpdate: () => invoke<void>("install_update"),
   openRepository: () => invoke<void>("open_repository"),
