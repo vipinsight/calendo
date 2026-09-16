@@ -13,7 +13,14 @@ import {
   occupancyFromWeeks,
 } from "../shared/month-outline";
 import { menuBarLabel, highlightedColumnRuns, trayLabelKey, type AppSettings } from "../shared/settings";
-import { eventStatus, eventTimeRange, trayIconEvent, upcomingHorizonEnd, type UpcomingEvent } from "../shared/events";
+import {
+  eventStatus,
+  eventTimeRange,
+  trayEventText,
+  trayIconEvent,
+  upcomingFetchEnd,
+  type UpcomingEvent,
+} from "../shared/events";
 import { lucideIcon } from "./icons";
 import { eventGlyphPng, framedGlyphPng } from "./tray-frame";
 import { markPopoverMaterial } from "./popover-size";
@@ -170,9 +177,10 @@ function startCalendar(api: DesktopApi): void {
       const monthStart = new Date(viewYear, viewMonth, 1);
       const monthEnd = new Date(viewYear, viewMonth + 1, 1);
       const now = Date.now();
-      const rangeEnd = Math.max(
-        upcomingHorizonEnd(now, current.upcomingHorizonHours),
-        now + current.upcomingIconLeadMinutes * 60_000,
+      const rangeEnd = upcomingFetchEnd(
+        now,
+        current.upcomingHorizonDays,
+        current.upcomingIconLeadMinutes,
       );
       const nextEvents = await api.getCalendarEvents(now, rangeEnd);
       let monthEvents: UpcomingEvent[] = [];
@@ -185,8 +193,9 @@ function startCalendar(api: DesktopApi): void {
       const dismissed = await api.getDismissedEvents().catch(() => []);
       if (request !== eventRequest) return;
       upcomingEvent = trayIconEvent(nextEvents, now, {
-        upcomingHorizonHours: current.upcomingHorizonHours,
+        upcomingHorizonDays: current.upcomingHorizonDays,
         upcomingIconLeadMinutes: current.upcomingIconLeadMinutes,
+        filters: current,
         dismissed,
       });
       calendarEvents = monthEvents;
@@ -258,12 +267,23 @@ function startCalendar(api: DesktopApi): void {
     const signature = trayLabelKey(label);
     // A hair space keeps "2h 21m" from reading as one long number without
     // opening the full word space the menu bar font would otherwise give it.
-    const eventTitle = status ? status.replace(/(\d+)([hm])/g, "$1\u200a$2") : null;
-    const eventSignature = `${eventTitle ?? ""}|${Boolean(eventTitle)}`;
+    const glyphText = status ? status.replace(/(\d+)([hm])/g, "$1\u200a$2") : null;
+    // Title and time ride beside the glyph as native text, never instead of it.
+    const previewText =
+      glyphText && upcomingEvent
+        ? trayEventText(upcomingEvent, now.getTime(), {
+            showTitle: settings.showEventTitleInMenuBar,
+            showTime: settings.showEventTimeInMenuBar,
+          })
+        : null;
+    const eventSignature = `${glyphText ?? ""}|${previewText ?? ""}|${Boolean(glyphText)}`;
     if (eventSignature !== lastEventTrayLabel) {
       lastEventTrayLabel = eventSignature;
-      // The countdown rides in the glyph, so the status item keeps no title.
-      void api.setEventTrayLabel(null, eventTitle ? eventGlyphPng(eventTitle) : null, Boolean(eventTitle));
+      void api.setEventTrayLabel(
+        previewText,
+        glyphText ? eventGlyphPng(glyphText) : null,
+        Boolean(glyphText),
+      );
     }
     if (signature === lastTrayLabel) return;
     lastTrayLabel = signature;
@@ -428,11 +448,12 @@ function startCalendar(api: DesktopApi): void {
   prev.addEventListener("click", () => shiftMonth(-1));
   todayButton.addEventListener("click", () => showToday());
   next.addEventListener("click", () => shiftMonth(1));
-  joinMeeting.addEventListener("click", () => {
+  const joinUpcoming = (): void => {
     const url = upcomingEvent?.joinUrl;
     if (!url) return;
     void api.joinMeeting(url).then(() => api.hideCalendar());
-  });
+  };
+  joinMeeting.addEventListener("click", joinUpcoming);
   calendarAccess.addEventListener("click", async () => {
     calendarAccess.disabled = true;
     try {
@@ -535,6 +556,9 @@ function startCalendar(api: DesktopApi): void {
   api.onEventDismissed(() => {
     void refreshUpcoming();
   });
+  // The global shortcut fires wherever focus is; the calendar window already
+  // knows which event the menu bar item is previewing.
+  api.onJoinUpcomingRequested(joinUpcoming);
   api.onCalendarShown(() => {
     refreshTray();
     render({ focusGrid: true });

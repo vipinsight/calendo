@@ -22,6 +22,7 @@ use tauri::{
     WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_updater::UpdaterExt;
 
 const CALENDAR_LABEL: &str = "calendar";
@@ -99,6 +100,44 @@ struct AppState {
     calendar_fade: AtomicU64,
     events_fade: AtomicU64,
     dismissed_events: Mutex<Vec<events::DismissedOccurrence>>,
+    /// The chords currently registered with the system, so a failed rebind
+    /// can leave the working one in place. Held only to read or write the
+    /// pair, never while the system is being asked to bind one.
+    shortcuts: Mutex<RegisteredShortcuts>,
+    /// One rebinding at a time, so two quick edits cannot interleave.
+    shortcut_rebind: Mutex<()>,
+}
+
+/// What each system-wide chord does when it fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortcutAction {
+    ToggleCalendar,
+    JoinUpcoming,
+}
+
+#[derive(Default)]
+struct RegisteredShortcuts {
+    toggle_calendar: Option<Shortcut>,
+    join_meeting: Option<Shortcut>,
+}
+
+impl RegisteredShortcuts {
+    fn slot(&mut self, action: ShortcutAction) -> &mut Option<Shortcut> {
+        match action {
+            ShortcutAction::ToggleCalendar => &mut self.toggle_calendar,
+            ShortcutAction::JoinUpcoming => &mut self.join_meeting,
+        }
+    }
+
+    fn action_for(&self, shortcut: &Shortcut) -> Option<ShortcutAction> {
+        if self.toggle_calendar.as_ref() == Some(shortcut) {
+            return Some(ShortcutAction::ToggleCalendar);
+        }
+        if self.join_meeting.as_ref() == Some(shortcut) {
+            return Some(ShortcutAction::JoinUpcoming);
+        }
+        None
+    }
 }
 
 /// How long after a blur-driven close a tray click still counts as the click
@@ -615,6 +654,101 @@ fn toggle_events(app: &AppHandle, tray_rect: tauri::Rect) {
     }
 }
 
+/// The status item's frame, which a shortcut has no click to carry.
+fn tray_anchor(app: &AppHandle) -> Option<tauri::Rect> {
+    app.tray_by_id(TRAY_ID)
+        .and_then(|tray| tray.rect().ok().flatten())
+}
+
+/// Opens the month popover from anywhere, closing the events popover first.
+fn toggle_calendar_from_shortcut(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(rect) = tray_anchor(&handle) else {
+            return;
+        };
+        toggle_calendar(&handle, rect);
+    });
+}
+
+/// The calendar window already knows which event the menu bar is previewing,
+/// so the shortcut asks it to open that link rather than picking one here.
+fn join_upcoming_from_shortcut(app: &AppHandle) {
+    let _ = app.emit_to(CALENDAR_LABEL, "join-upcoming", ());
+}
+
+fn run_shortcut(app: &AppHandle, action: ShortcutAction) {
+    match action {
+        ShortcutAction::ToggleCalendar => toggle_calendar_from_shortcut(app),
+        ShortcutAction::JoinUpcoming => join_upcoming_from_shortcut(app),
+    }
+}
+
+/// Binds one chord, keeping the working one when the system refuses the new.
+///
+/// macOS may hand a chord to another app first, or ask for Accessibility
+/// before it will deliver one at all. Neither is worth an alert: log it and
+/// leave the previous binding alone.
+///
+/// Registering blocks on the main thread, so this must run off it and must
+/// not hold `shortcuts` while it waits: the main thread may be inside the
+/// hotkey handler, which reads that same state.
+fn rebind_shortcut(app: &AppHandle, action: ShortcutAction, chord: &str) {
+    let desired: Option<Shortcut> = match chord.trim() {
+        "" => None,
+        text => match text.parse::<Shortcut>() {
+            Ok(shortcut) => Some(shortcut),
+            Err(error) => {
+                eprintln!("Ignoring unreadable shortcut {text:?}: {error}");
+                return;
+            }
+        },
+    };
+    let state = app.state::<AppState>();
+    let previous = match state.shortcuts.lock() {
+        Ok(mut registered) => *registered.slot(action),
+        Err(_) => return,
+    };
+    if previous == desired {
+        return;
+    }
+    if let Some(old) = previous {
+        let _ = app.global_shortcut().unregister(old);
+    }
+    let bound = match desired {
+        None => None,
+        Some(shortcut) => match app.global_shortcut().register(shortcut) {
+            Ok(()) => Some(shortcut),
+            Err(error) => {
+                eprintln!("Could not register {chord:?}: {error}");
+                // Put the working chord back so the app is not left with nothing.
+                previous.filter(|old| app.global_shortcut().register(*old).is_ok())
+            }
+        },
+    };
+    let locked = state.shortcuts.lock();
+    if let Ok(mut registered) = locked {
+        *registered.slot(action) = bound;
+    }
+}
+
+/// Binds both chords on a worker thread. During setup the event loop has not
+/// started yet, so a registration made here would wait on a main thread that
+/// is not reading tasks.
+fn apply_shortcuts(app: &AppHandle, settings: &AppSettings) {
+    let handle = app.clone();
+    let toggle = settings.toggle_calendar_shortcut.clone();
+    let join = settings.join_meeting_shortcut.clone();
+    std::thread::spawn(move || {
+        let state = handle.state::<AppState>();
+        let Ok(_rebinding) = state.shortcut_rebind.lock() else {
+            return;
+        };
+        rebind_shortcut(&handle, ShortcutAction::ToggleCalendar, &toggle);
+        rebind_shortcut(&handle, ShortcutAction::JoinUpcoming, &join);
+    });
+}
+
 fn present_settings(app: &AppHandle) {
     close_calendar(app);
     close_events(app);
@@ -884,6 +1018,11 @@ fn update_settings(
     if saved.theme != previous.theme {
         apply_app_theme(&app, &saved.theme);
     }
+    if saved.toggle_calendar_shortcut != previous.toggle_calendar_shortcut
+        || saved.join_meeting_shortcut != previous.join_meeting_shortcut
+    {
+        apply_shortcuts(&app, &saved);
+    }
     if saved.auto_update && !previous.auto_update && !cfg!(debug_assertions) {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -956,7 +1095,9 @@ fn set_event_tray_label(
                 let _ = tray.set_icon_with_as_template(Some(icon), true);
             }
         }
-        let _ = tray.set_title(title.as_deref());
+        // set_title(None) leaves the previous native title in place on macOS,
+        // so turning the title or time off writes an explicit empty string.
+        let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
     });
 }
 
@@ -1323,6 +1464,24 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
         ))
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let action = app
+                        .state::<AppState>()
+                        .shortcuts
+                        .lock()
+                        .ok()
+                        .and_then(|registered| registered.action_for(shortcut));
+                    if let Some(action) = action {
+                        run_shortcut(app, action);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
             let user_data = user_data_dir(app.handle());
@@ -1339,6 +1498,8 @@ pub fn run() {
                 calendar_fade: AtomicU64::new(0),
                 events_fade: AtomicU64::new(0),
                 dismissed_events: Mutex::new(Vec::new()),
+                shortcuts: Mutex::new(RegisteredShortcuts::default()),
+                shortcut_rebind: Mutex::new(()),
             });
             set_launch_at_login(app.handle(), initial.launch_at_login);
             build_calendar_window(app.handle())?;
@@ -1346,6 +1507,7 @@ pub fn run() {
             build_settings_window(app.handle())?;
             apply_app_theme(app.handle(), &initial.theme);
             build_tray(app.handle())?;
+            apply_shortcuts(app.handle(), &initial);
             spawn_clock(app.handle().clone());
             spawn_auto_update(app.handle().clone());
             Ok(())

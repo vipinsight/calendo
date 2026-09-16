@@ -1,4 +1,13 @@
-import { eventInUpcomingHorizon, eventStatus, trayIconEvent, upcomingHorizonEmpty, upcomingHorizonEnd, type EventResponse, type UpcomingEvent } from "../shared/events";
+import {
+  eventStatus,
+  trayIconEvent,
+  upcomingFetchEnd,
+  upcomingHorizonEmpty,
+  visibleUpcomingEvents,
+  type EventFilters,
+  type EventResponse,
+  type UpcomingEvent,
+} from "../shared/events";
 import { installTauriBridge } from "./host";
 import { lucideIcon } from "./icons";
 import { meetingBrand } from "../shared/meetings";
@@ -50,7 +59,6 @@ function eventRow(event: UpcomingEvent): HTMLElement {
   row.addEventListener("click", () => openEvent(event));
   const dot = document.createElement("span");
   dot.className = `dot ${event.response}`;
-  if (event.response === "declined") row.classList.add("declined");
   const title = document.createElement("span");
   title.className = "title";
   const when = event.allDay ? "All day" : timeFormat.format(new Date(event.startAt));
@@ -123,8 +131,21 @@ function syncHeight(): void {
 }
 
 let loadRevision = 0;
-let horizonHours = DEFAULT_SETTINGS.upcomingHorizonHours;
+let horizonDays = DEFAULT_SETTINGS.upcomingHorizonDays;
 let iconLeadMinutes = DEFAULT_SETTINGS.upcomingIconLeadMinutes;
+let filters: EventFilters = {
+  includeAllDayEvents: DEFAULT_SETTINGS.includeAllDayEvents,
+  includeEventsWithoutParticipants: DEFAULT_SETTINGS.includeEventsWithoutParticipants,
+  includeEventsWithoutLocation: DEFAULT_SETTINGS.includeEventsWithoutLocation,
+};
+
+function filterKey(current: EventFilters): string {
+  return [
+    current.includeAllDayEvents,
+    current.includeEventsWithoutParticipants,
+    current.includeEventsWithoutLocation,
+  ].join("|");
+}
 
 function sameOccurrence(
   left: Pick<UpcomingEvent, "id" | "endAt">,
@@ -137,23 +158,21 @@ async function load(): Promise<void> {
   const revision = ++loadRevision;
   const now = Date.now();
   try {
-    const rangeEnd = Math.max(
-      upcomingHorizonEnd(now, horizonHours),
-      now + iconLeadMinutes * 60_000,
-    );
+    const rangeEnd = upcomingFetchEnd(now, horizonDays, iconLeadMinutes);
     const [events, dismissed] = await Promise.all([
       api.getCalendarEvents(now, rangeEnd),
       api.getDismissedEvents().catch(() => []),
     ]);
     if (revision !== loadRevision) return;
-    const upcoming = events.filter((event) => eventInUpcomingHorizon(event, now, horizonHours));
+    const upcoming = visibleUpcomingEvents(events, now, horizonDays, filters);
     const featured = trayIconEvent(events, now, {
-      upcomingHorizonHours: horizonHours,
+      upcomingHorizonDays: horizonDays,
       upcomingIconLeadMinutes: iconLeadMinutes,
+      filters,
       dismissed,
     });
     if (!upcoming.length && !featured) {
-      list.innerHTML = `<p class="empty">${upcomingHorizonEmpty(horizonHours)}</p>`;
+      list.innerHTML = `<p class="empty">${upcomingHorizonEmpty(horizonDays)}</p>`;
       syncHeight();
       return;
     }
@@ -190,19 +209,23 @@ async function load(): Promise<void> {
 void markPopoverMaterial(() => api.getPopoverMaterial());
 let hiddenCalendarKey = DEFAULT_SETTINGS.hiddenCalendarIds.join("\0");
 
-function applyEventSettings(
-  settings: Pick<AppSettings, "upcomingHorizonHours" | "upcomingIconLeadMinutes"> &
-    Partial<Pick<AppSettings, "hiddenCalendarIds">>,
-): void {
+function applyEventSettings(settings: AppSettings): void {
   const hiddenKey = (settings.hiddenCalendarIds ?? []).join("\0");
-  const hoursChanged = settings.upcomingHorizonHours !== horizonHours;
+  const next: EventFilters = {
+    includeAllDayEvents: settings.includeAllDayEvents,
+    includeEventsWithoutParticipants: settings.includeEventsWithoutParticipants,
+    includeEventsWithoutLocation: settings.includeEventsWithoutLocation,
+  };
+  const daysChanged = settings.upcomingHorizonDays !== horizonDays;
   const leadChanged = settings.upcomingIconLeadMinutes !== iconLeadMinutes;
   const hiddenChanged = hiddenKey !== hiddenCalendarKey;
-  horizonHours = settings.upcomingHorizonHours;
+  const filtersChanged = filterKey(next) !== filterKey(filters);
+  horizonDays = settings.upcomingHorizonDays;
   iconLeadMinutes =
     settings.upcomingIconLeadMinutes ?? DEFAULT_SETTINGS.upcomingIconLeadMinutes;
+  filters = next;
   hiddenCalendarKey = hiddenKey;
-  if (hoursChanged || leadChanged || hiddenChanged) void load();
+  if (daysChanged || leadChanged || hiddenChanged || filtersChanged) void load();
 }
 
 void api.getSettings().then(applyEventSettings);

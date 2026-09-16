@@ -49,6 +49,9 @@ pub struct UpcomingEvent {
     pub kind: String,
     #[serde(default)]
     pub all_day: bool,
+    /// Whether anyone else was invited. Reminders and solo blocks are false.
+    #[serde(default)]
+    pub has_participants: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -656,6 +659,11 @@ mod macos {
         value.to_string()
     }
 
+    /// Whether the event names anyone besides its owner.
+    fn has_participants(event: &objc2_event_kit::EKEvent) -> bool {
+        unsafe { event.attendees() }.is_some_and(|attendees| attendees.count() > 0)
+    }
+
     /// The user's own answer to the invitation, read from the attendee list.
     fn own_response(event: &objc2_event_kit::EKEvent) -> Response {
         let Some(attendees) = (unsafe { event.attendees() }) else {
@@ -851,6 +859,7 @@ mod macos {
                     response: own_response(&event),
                     kind: "event".into(),
                     all_day,
+                    has_participants: has_participants(&event),
                 });
             }
             if can_fetch_events(reminder_status_code(), reminders_granted_this_session()) {
@@ -938,6 +947,7 @@ mod macos {
                             response: Response::Confirmed,
                             kind: "reminder".into(),
                             all_day,
+                            has_participants: false,
                         });
                     }
                 }

@@ -101,6 +101,56 @@
               <input id="auto-update" name="autoUpdate" type="checkbox" switch />
             </div>
           </div>
+
+          <div class="group">
+            <h2 id="shortcuts-heading">Shortcuts</h2>
+            <div class="card">
+              <div class="row">
+                <div class="copy">
+                  <label id="toggle-calendar-shortcut-label">Show or hide the calendar</label>
+                  <p>Works while another app is in front. macOS may ask for Accessibility first.</p>
+                </div>
+                <div class="row-controls">
+                  <button
+                    type="button"
+                    class="shortcut"
+                    id="toggle-calendar-shortcut"
+                    aria-labelledby="toggle-calendar-shortcut-label"
+                  ></button>
+                  <button
+                    type="button"
+                    class="action subtle"
+                    id="toggle-calendar-shortcut-clear"
+                    aria-label="Clear the calendar shortcut"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div class="row">
+                <div class="copy">
+                  <label id="join-meeting-shortcut-label">Join upcoming meeting</label>
+                  <p>Opens the link on the event the menu bar is previewing.</p>
+                </div>
+                <div class="row-controls">
+                  <button
+                    type="button"
+                    class="shortcut"
+                    id="join-meeting-shortcut"
+                    aria-labelledby="join-meeting-shortcut-label"
+                  ></button>
+                  <button
+                    type="button"
+                    class="action subtle"
+                    id="join-meeting-shortcut-clear"
+                    aria-label="Clear the join shortcut"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section
@@ -201,16 +251,81 @@
               <div class="row" id="upcoming-horizon-row">
                 <div class="copy">
                   <label for="upcoming-horizon">Show events for</label>
-                  <p>The rest of today, or through tomorrow.</p>
+                  <p>How far ahead the list looks, through local midnight.</p>
                 </div>
-                <select id="upcoming-horizon" name="upcomingHorizonHours"></select>
+                <select id="upcoming-horizon" name="upcomingHorizonDays"></select>
               </div>
+              <div class="row" id="include-all-day-row">
+                <div class="copy">
+                  <label for="include-all-day">All-day events</label>
+                  <p>Birthdays and other items with no time of their own.</p>
+                </div>
+                <input
+                  id="include-all-day"
+                  name="includeAllDayEvents"
+                  type="checkbox"
+                  switch
+                />
+              </div>
+              <div class="row" id="include-without-participants-row">
+                <div class="copy">
+                  <label for="include-without-participants">Events without participants</label>
+                  <p>Blocks nobody else was invited to.</p>
+                </div>
+                <input
+                  id="include-without-participants"
+                  name="includeEventsWithoutParticipants"
+                  type="checkbox"
+                  switch
+                />
+              </div>
+              <div class="row" id="include-without-location-row">
+                <div class="copy">
+                  <label for="include-without-location">Events without conferencing or location</label>
+                  <p>Items with neither a meeting link nor a place.</p>
+                </div>
+                <input
+                  id="include-without-location"
+                  name="includeEventsWithoutLocation"
+                  type="checkbox"
+                  switch
+                />
+              </div>
+            </div>
+          </div>
+          <div class="group">
+            <h2 id="preview-heading">Preview in menu bar</h2>
+            <div class="card">
               <div class="row" id="upcoming-icon-lead-row">
                 <div class="copy">
                   <label for="upcoming-icon-lead">Show upcoming events</label>
-                  <p>Always, or only shortly before the next one.</p>
+                  <p>When the events item joins the menu bar.</p>
                 </div>
                 <select id="upcoming-icon-lead" name="upcomingIconLeadMinutes"></select>
+              </div>
+              <div class="row" id="show-event-time-row">
+                <div class="copy">
+                  <label for="show-event-time">Event time</label>
+                  <p>Start time, or the time left once it is running.</p>
+                </div>
+                <input
+                  id="show-event-time"
+                  name="showEventTimeInMenuBar"
+                  type="checkbox"
+                  switch
+                />
+              </div>
+              <div class="row" id="show-event-title-row">
+                <div class="copy">
+                  <label for="show-event-title">Event title</label>
+                  <p>The event name, shortened to fit the menu bar.</p>
+                </div>
+                <input
+                  id="show-event-title"
+                  name="showEventTitleInMenuBar"
+                  type="checkbox"
+                  switch
+                />
               </div>
             </div>
           </div>

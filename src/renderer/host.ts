@@ -58,6 +58,7 @@ export type DesktopApi = {
   onCalendarHidden: (listener: () => void) => () => void;
   onClockTick: (listener: () => void) => () => void;
   onEventDismissed: (listener: () => void) => () => void;
+  onJoinUpcomingRequested: (listener: () => void) => () => void;
 };
 
 function maybeTauri(): TauriGlobal | null {
@@ -138,6 +139,7 @@ export const api: DesktopApi = {
   onCalendarHidden: (listener) => subscribe<void>("calendar-hidden", listener),
   onClockTick: (listener) => subscribe<void>("clock-tick", listener),
   onEventDismissed: (listener) => subscribe<void>("event-dismissed", listener),
+  onJoinUpcomingRequested: (listener) => subscribe<void>("join-upcoming", listener),
 };
 
 export function installTauriBridge(): DesktopApi {

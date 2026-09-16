@@ -47,7 +47,7 @@ describe("normalizeSettings", () => {
     expect(result.launchAtLogin).toBe(true);
     expect(result.beepOnTheHour).toBe(true);
     expect(result.showUpcomingEvent).toBe(true);
-    expect(result.upcomingHorizonHours).toBe(48);
+    expect(result.upcomingHorizonDays).toBe(2);
     expect(result.upcomingIconLeadMinutes).toBe(15);
     expect(result.hiddenCalendarIds).toEqual(["work"]);
     expect(result.theme).toBe("dark");
@@ -113,29 +113,75 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ autoUpdate: false }).autoUpdate).toBe(false);
   });
 
-  it("looks through the rest of today unless two days are stored", () => {
-    expect(normalizeSettings({}).upcomingHorizonHours).toBe(24);
-    expect(normalizeSettings({ upcomingHorizonHours: 2 }).upcomingHorizonHours).toBe(24);
-    expect(normalizeSettings({ upcomingHorizonHours: 6 }).upcomingHorizonHours).toBe(24);
-    expect(normalizeSettings({ upcomingHorizonHours: 12 }).upcomingHorizonHours).toBe(24);
-    expect(normalizeSettings({ upcomingHorizonHours: 24 }).upcomingHorizonHours).toBe(24);
-    expect(normalizeSettings({ upcomingHorizonHours: 48 }).upcomingHorizonHours).toBe(48);
+  it("looks through the rest of today unless a longer window is stored", () => {
+    expect(normalizeSettings({}).upcomingHorizonDays).toBe(1);
+    for (const days of [1, 2, 3, 4, 5, 6, 7, 14, 30]) {
+      expect(normalizeSettings({ upcomingHorizonDays: days }).upcomingHorizonDays).toBe(days);
+    }
+    expect(normalizeSettings({ upcomingHorizonDays: 9 }).upcomingHorizonDays).toBe(1);
+  });
+
+  it("migrates the stored hour look-ahead to the matching day window", () => {
+    expect(normalizeSettings({ upcomingHorizonHours: 24 }).upcomingHorizonDays).toBe(1);
+    expect(normalizeSettings({ upcomingHorizonHours: 48 }).upcomingHorizonDays).toBe(2);
+    expect(normalizeSettings({ upcomingHorizonHours: 6 }).upcomingHorizonDays).toBe(1);
+    // A file that already names days keeps them.
+    expect(
+      normalizeSettings({ upcomingHorizonHours: 48, upcomingHorizonDays: 7 })
+        .upcomingHorizonDays,
+    ).toBe(7);
   });
 
   it("keeps the events icon visible unless a lead time is stored", () => {
     expect(normalizeSettings({}).upcomingIconLeadMinutes).toBe(0);
-    expect(normalizeSettings({ upcomingIconLeadMinutes: 15 }).upcomingIconLeadMinutes).toBe(15);
+    for (const minutes of [1, 15, 30, 60, 240, 480, 720, 1440]) {
+      expect(
+        normalizeSettings({ upcomingIconLeadMinutes: minutes }).upcomingIconLeadMinutes,
+      ).toBe(minutes);
+    }
     expect(normalizeSettings({ upcomingIconLeadMinutes: 20 }).upcomingIconLeadMinutes).toBe(0);
-    expect(normalizeSettings({ upcomingIconLeadMinutes: 120 }).upcomingIconLeadMinutes).toBe(120);
   });
 
-  it("names the icon lead and list horizon the way Settings shows them", () => {
-    expect(upcomingHorizonLabel(24)).toBe("1 day");
-    expect(upcomingHorizonLabel(48)).toBe("2 days");
+  it("moves a retired lead to the nearest one that survived", () => {
+    expect(normalizeSettings({ upcomingIconLeadMinutes: 10 }).upcomingIconLeadMinutes).toBe(15);
+    expect(normalizeSettings({ upcomingIconLeadMinutes: 120 }).upcomingIconLeadMinutes).toBe(60);
+  });
+
+  it("shows every event and keeps the menu bar glyph-only by default", () => {
+    const settings = normalizeSettings({});
+    expect(settings.includeAllDayEvents).toBe(false);
+    expect(settings.includeEventsWithoutParticipants).toBe(true);
+    expect(settings.includeEventsWithoutLocation).toBe(true);
+    expect(settings.showEventTitleInMenuBar).toBe(false);
+    expect(settings.showEventTimeInMenuBar).toBe(false);
+  });
+
+  it("binds the calendar to a chord and leaves join unset", () => {
+    const settings = normalizeSettings({});
+    expect(settings.toggleCalendarShortcut).toBe("Control+Command+K");
+    expect(settings.joinMeetingShortcut).toBe("");
+    expect(
+      normalizeSettings({ toggleCalendarShortcut: " Control+Command+J " })
+        .toggleCalendarShortcut,
+    ).toBe("Control+Command+J");
+    expect(
+      normalizeSettings({ joinMeetingShortcut: 7 }).joinMeetingShortcut,
+    ).toBe("");
+  });
+
+  it("names the icon lead and list window the way Settings shows them", () => {
+    expect(upcomingHorizonLabel(1)).toBe("Today");
+    expect(upcomingHorizonLabel(2)).toBe("Today and tomorrow");
+    expect(upcomingHorizonLabel(5)).toBe("5 days");
+    expect(upcomingHorizonLabel(7)).toBe("1 week");
+    expect(upcomingHorizonLabel(14)).toBe("2 weeks");
+    expect(upcomingHorizonLabel(30)).toBe("1 month");
     expect(upcomingIconLeadLabel(0)).toBe("Always show");
+    expect(upcomingIconLeadLabel(1)).toBe("At start of event");
     expect(upcomingIconLeadLabel(15)).toBe("15 minutes before");
     expect(upcomingIconLeadLabel(60)).toBe("1 hour before");
-    expect(upcomingIconLeadLabel(120)).toBe("2 hours before");
+    expect(upcomingIconLeadLabel(240)).toBe("4 hours before");
+    expect(upcomingIconLeadLabel(1440)).toBe("24 hours before");
   });
 
   it("migrates dim weekends off to no highlighted columns", () => {

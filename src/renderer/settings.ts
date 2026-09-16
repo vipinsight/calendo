@@ -4,7 +4,7 @@ import {
   groupCalendarsBySource,
   HIGHLIGHT_DAYS,
   MENU_BAR_ICONS,
-  UPCOMING_HORIZON_HOURS,
+  UPCOMING_HORIZON_DAYS,
   UPCOMING_ICON_LEAD_MINUTES,
   upcomingHorizonLabel,
   upcomingIconLeadLabel,
@@ -14,7 +14,7 @@ import {
   type CalendarInfo,
   type MenuBarIconStyle,
   type Theme,
-  type UpcomingHorizonHours,
+  type UpcomingHorizonDays,
   type UpcomingIconLeadMinutes,
   type Weekday,
   type WeekStartsOn,
@@ -24,6 +24,7 @@ import { lucideIcon } from "./icons";
 import { framedGlyphMask } from "./tray-frame";
 import { Check, Volume2 } from "lucide";
 import { bindCalendarAccess } from "./calendar-access";
+import { chordFromKeyboard, chordLabel } from "../shared/shortcuts";
 
 function requireElement<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -114,6 +115,25 @@ function startSettings(api: DesktopApi): void {
   const showUpcoming = requireElement<HTMLInputElement>("show-upcoming");
   const upcomingHorizon = requireElement<HTMLSelectElement>("upcoming-horizon");
   const upcomingIconLead = requireElement<HTMLSelectElement>("upcoming-icon-lead");
+  const includeAllDay = requireElement<HTMLInputElement>("include-all-day");
+  const includeWithoutParticipants = requireElement<HTMLInputElement>(
+    "include-without-participants",
+  );
+  const includeWithoutLocation = requireElement<HTMLInputElement>(
+    "include-without-location",
+  );
+  const showEventTitle = requireElement<HTMLInputElement>("show-event-title");
+  const showEventTime = requireElement<HTMLInputElement>("show-event-time");
+  const toggleCalendarShortcut = requireElement<HTMLButtonElement>(
+    "toggle-calendar-shortcut",
+  );
+  const toggleCalendarShortcutClear = requireElement<HTMLButtonElement>(
+    "toggle-calendar-shortcut-clear",
+  );
+  const joinMeetingShortcut = requireElement<HTMLButtonElement>("join-meeting-shortcut");
+  const joinMeetingShortcutClear = requireElement<HTMLButtonElement>(
+    "join-meeting-shortcut-clear",
+  );
   const calendarAccessStatus = requireElement<HTMLParagraphElement>("calendar-access-status");
   const calendarAccess = requireElement<HTMLButtonElement>("calendar-access");
   const calendarAccessRow = requireElement<HTMLElement>("calendar-access-row");
@@ -141,9 +161,9 @@ function startSettings(api: DesktopApi): void {
   );
   fillSelect(
     upcomingHorizon,
-    UPCOMING_HORIZON_HOURS.map((hours) => ({
-      value: String(hours),
-      label: upcomingHorizonLabel(hours),
+    UPCOMING_HORIZON_DAYS.map((days) => ({
+      value: String(days),
+      label: upcomingHorizonLabel(days),
     })),
   );
   fillSelect(
@@ -197,8 +217,18 @@ function startSettings(api: DesktopApi): void {
     }
   };
 
+  const upcomingControls = (): (HTMLSelectElement | HTMLInputElement)[] => [
+    upcomingHorizon,
+    includeAllDay,
+    includeWithoutParticipants,
+    includeWithoutLocation,
+    upcomingIconLead,
+    showEventTime,
+    showEventTitle,
+  ];
+
   const paintUpcomingOptions = (enabled: boolean): void => {
-    for (const input of [upcomingHorizon, upcomingIconLead]) {
+    for (const input of upcomingControls()) {
       input.disabled = !enabled;
       input.closest(".row")?.classList.toggle("is-off", !enabled);
     }
@@ -320,6 +350,61 @@ function startSettings(api: DesktopApi): void {
     }
   };
 
+  /** The field reads its chord in macOS glyphs; an unset one invites a recording. */
+  const paintShortcut = (field: HTMLButtonElement, chord: string): void => {
+    field.dataset.chord = chord;
+    if (field.dataset.recording === "true") return;
+    field.textContent = chordLabel(chord) || "Record Shortcut";
+    field.classList.toggle("is-unset", !chord);
+  };
+
+  const bindShortcutField = (
+    field: HTMLButtonElement,
+    clear: HTMLButtonElement,
+    key: "toggleCalendarShortcut" | "joinMeetingShortcut",
+  ): void => {
+    const stopRecording = (): void => {
+      if (field.dataset.recording !== "true") return;
+      field.dataset.recording = "false";
+      field.classList.remove("is-recording");
+      paintShortcut(field, field.dataset.chord ?? "");
+    };
+    field.addEventListener("click", () => {
+      field.dataset.recording = "true";
+      field.classList.add("is-recording");
+      field.textContent = "Press keys…";
+    });
+    field.addEventListener("blur", stopRecording);
+    field.addEventListener("keydown", (event) => {
+      if (field.dataset.recording !== "true") return;
+      // A recording field swallows the chord rather than acting on it.
+      event.preventDefault();
+      if (event.key === "Escape") {
+        stopRecording();
+        return;
+      }
+      const chord = chordFromKeyboard(event);
+      if (!chord) return;
+      field.dataset.recording = "false";
+      field.classList.remove("is-recording");
+      paintShortcut(field, chord);
+      void api.updateSettings({ [key]: chord });
+    });
+    clear.addEventListener("click", () => {
+      field.dataset.recording = "false";
+      field.classList.remove("is-recording");
+      paintShortcut(field, "");
+      void api.updateSettings({ [key]: "" });
+    });
+  };
+
+  bindShortcutField(
+    toggleCalendarShortcut,
+    toggleCalendarShortcutClear,
+    "toggleCalendarShortcut",
+  );
+  bindShortcutField(joinMeetingShortcut, joinMeetingShortcutClear, "joinMeetingShortcut");
+
   const paint = (settings: AppSettings): void => {
     applyTheme(settings.theme);
     paintIconStyle(iconStyles, settings.menuBarIcon);
@@ -333,9 +418,16 @@ function startSettings(api: DesktopApi): void {
     beep.checked = settings.beepOnTheHour;
     autoUpdate.checked = settings.autoUpdate;
     showUpcoming.checked = settings.showUpcomingEvent;
-    upcomingHorizon.value = String(settings.upcomingHorizonHours);
+    upcomingHorizon.value = String(settings.upcomingHorizonDays);
     upcomingIconLead.value = String(settings.upcomingIconLeadMinutes);
+    includeAllDay.checked = settings.includeAllDayEvents;
+    includeWithoutParticipants.checked = settings.includeEventsWithoutParticipants;
+    includeWithoutLocation.checked = settings.includeEventsWithoutLocation;
+    showEventTitle.checked = settings.showEventTitleInMenuBar;
+    showEventTime.checked = settings.showEventTimeInMenuBar;
     paintUpcomingOptions(settings.showUpcomingEvent);
+    paintShortcut(toggleCalendarShortcut, settings.toggleCalendarShortcut);
+    paintShortcut(joinMeetingShortcut, settings.joinMeetingShortcut);
     hiddenCalendarIds = settings.hiddenCalendarIds;
     paintCalendarSelection(settings.hiddenCalendarIds);
     theme.value = settings.theme;
@@ -351,8 +443,13 @@ function startSettings(api: DesktopApi): void {
     beepOnTheHour: beep.checked,
     autoUpdate: autoUpdate.checked,
     showUpcomingEvent: showUpcoming.checked,
-    upcomingHorizonHours: Number(upcomingHorizon.value) as UpcomingHorizonHours,
+    upcomingHorizonDays: Number(upcomingHorizon.value) as UpcomingHorizonDays,
     upcomingIconLeadMinutes: Number(upcomingIconLead.value) as UpcomingIconLeadMinutes,
+    includeAllDayEvents: includeAllDay.checked,
+    includeEventsWithoutParticipants: includeWithoutParticipants.checked,
+    includeEventsWithoutLocation: includeWithoutLocation.checked,
+    showEventTitleInMenuBar: showEventTitle.checked,
+    showEventTimeInMenuBar: showEventTime.checked,
     theme: theme.value as Theme,
   });
 

@@ -18,12 +18,16 @@ Apple Silicon and Intel Macs on macOS 13 or newer.
   without opening Calendar.
 - **What’s next.** An optional second menu bar item counts down to the next
   calendar event or scheduled reminder, and opens a list of what’s coming.
-- **Your calendars, your lists.** Settings → Events chooses the look-ahead
-  and which calendars and reminder lists appear.
+- **Your calendars, your lists.** Settings → Events chooses the look-ahead,
+  which events qualify, when the countdown appears, and which calendars and
+  reminder lists it reads.
 - **Stays on this Mac.** Calendar and Reminders are read locally. Nothing is
   uploaded.
 
 Right-click either menu bar item for Settings and Quit. **⌘,** opens Settings.
+**⌃⌘K** shows or hides the calendar from any app, and Settings → General can
+record a chord for joining the next meeting. macOS may ask for Accessibility
+the first time a system-wide shortcut fires.
 
 ## Install
 
