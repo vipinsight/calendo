@@ -13,7 +13,7 @@ import { lucideIcon } from "./icons";
 import { meetingBrand } from "../shared/meetings";
 import { meetingIcon } from "./brand-icons";
 import { markPopoverMaterial, popoverHeight } from "./popover-size";
-import { CalendarDays, ChevronDown, EyeOff, MapPin } from "lucide";
+import { ChevronRight, EyeOff, MapPin } from "lucide";
 import { DEFAULT_SETTINGS, type AppSettings } from "../shared/settings";
 
 const api = installTauriBridge();
@@ -52,15 +52,35 @@ function openEvent(event: UpcomingEvent): void {
   void api.hideEvents();
 }
 
-function eventRow(
-  event: UpcomingEvent,
-  onActivate = () => openEvent(event),
-  options: { expandable?: boolean } = {},
-): HTMLElement {
+/**
+ * The meeting's own badge at the trailing edge: the service's mark and an
+ * arrow into the call. It answers "which app is this on?" without opening
+ * anything, and joins on click.
+ */
+function joinBadge(event: UpcomingEvent): HTMLElement | null {
+  if (!event.joinUrl) return null;
+  const url = event.joinUrl;
+  const { brand, label } = meetingBrand(url);
+  const badge = document.createElement("button");
+  badge.type = "button";
+  badge.className = "join";
+  badge.title = label;
+  badge.setAttribute("aria-label", label);
+  badge.append(meetingIcon(brand, 13), lucideIcon(ChevronRight, 13));
+  badge.addEventListener("click", (click) => {
+    // The row underneath opens Calendar; the badge opens the call.
+    click.stopPropagation();
+    void api.joinMeeting(url);
+    void api.hideEvents();
+  });
+  return badge;
+}
+
+function eventRow(event: UpcomingEvent, options: { join?: boolean } = {}): HTMLElement {
   const row = document.createElement("div");
   row.className = "event interactive";
   row.setAttribute("role", "button");
-  row.addEventListener("click", onActivate);
+  row.addEventListener("click", () => openEvent(event));
   const dot = document.createElement("span");
   dot.className = `dot ${event.response}`;
   const title = document.createElement("span");
@@ -70,13 +90,8 @@ function eventRow(
   const response = RESPONSE_LABEL[event.response];
   row.title = response ? `${title.textContent} — ${response}` : title.textContent;
   row.append(dot, title);
-  if (options.expandable) {
-    const caret = document.createElement("span");
-    caret.className = "caret";
-    caret.setAttribute("aria-hidden", "true");
-    caret.append(lucideIcon(ChevronDown, 13));
-    row.append(caret);
-  }
+  const badge = options.join ? joinBadge(event) : null;
+  if (badge) row.append(badge);
   return row;
 }
 
@@ -110,26 +125,6 @@ function eventDetails(event: UpcomingEvent, includeLocation = false): HTMLElemen
     details.append(detailRow(lucideIcon(MapPin, 15), event.location));
   }
   return details.childElementCount ? details : null;
-}
-
-/**
- * The row's actions, as a real menu the window cannot clip: the meeting link
- * and the calendar entry behind it. RSVP answers belong here too once
- * EventKit can write them.
- */
-function showActions(row: HTMLElement, event: UpcomingEvent): void {
-  const box = row.getBoundingClientRect();
-  row.setAttribute("aria-expanded", "true");
-  void api
-    .showEventActions({
-      id: event.id,
-      joinUrl: event.joinUrl,
-      joinLabel: event.joinUrl ? meetingBrand(event.joinUrl).label : null,
-      // The menu hangs from the row's lower left, the way a disclosure would.
-      x: box.left,
-      y: box.bottom,
-    })
-    .finally(() => row.setAttribute("aria-expanded", "false"));
 }
 
 function featuredEvent(
@@ -212,8 +207,8 @@ async function load(): Promise<void> {
           void api.dismissUpcomingEvent(featured.id, featured.endAt).then(() => void load());
         })
       : [];
-    // Each row opens its own actions instead of carrying a Join of its own,
-    // so the link you click is always the meeting you were looking at.
+    // A meeting carries its own badge, so the list stays one line per event
+    // and the call is one click from the row it belongs to.
     let currentDay = "";
     for (const event of upcoming) {
       if (featured && sameOccurrence(event, featured)) continue;
@@ -223,9 +218,7 @@ async function load(): Promise<void> {
         currentDay = key;
         nodes.push(sectionLabel(dayLabel(date)));
       }
-      const row = eventRow(event, () => showActions(row, event), { expandable: true });
-      row.setAttribute("aria-expanded", "false");
-      nodes.push(row);
+      nodes.push(eventRow(event, { join: true }));
     }
     list.replaceChildren(...nodes);
     syncHeight();

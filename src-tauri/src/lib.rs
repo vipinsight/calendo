@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::menu::{ContextMenu, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     ActivationPolicy, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition,
@@ -106,18 +106,6 @@ struct AppState {
     shortcuts: Mutex<RegisteredShortcuts>,
     /// One rebinding at a time, so two quick edits cannot interleave.
     shortcut_rebind: Mutex<()>,
-    /// The row whose actions menu is open, so the menu item knows its event.
-    event_actions: Mutex<Option<EventActionTarget>>,
-    /// A popup menu takes key away from the popover; that blur is not a
-    /// dismissal, so the events window ignores it while the menu is up.
-    ignore_events_blur: AtomicBool,
-}
-
-/// The event a popped-up actions menu belongs to.
-#[derive(Clone, Debug)]
-struct EventActionTarget {
-    id: String,
-    join_url: Option<String>,
 }
 
 /// What each system-wide chord does when it fires.
@@ -761,82 +749,6 @@ fn apply_shortcuts(app: &AppHandle, settings: &AppSettings) {
     });
 }
 
-const EVENT_JOIN_ITEM: &str = "event-join";
-const EVENT_OPEN_ITEM: &str = "event-open";
-
-/// Acts on the row whose menu was open. Unknown ids belong to the tray menu,
-/// which has its own handler.
-fn handle_event_action(app: &AppHandle, id: &str) {
-    if id != EVENT_JOIN_ITEM && id != EVENT_OPEN_ITEM {
-        return;
-    }
-    let target = app
-        .state::<AppState>()
-        .event_actions
-        .lock()
-        .ok()
-        .and_then(|target| target.clone());
-    let Some(target) = target else {
-        return;
-    };
-    let acted = match id {
-        EVENT_JOIN_ITEM => target
-            .join_url
-            .as_deref()
-            .is_some_and(|url| events::open_meeting(url).is_ok()),
-        _ => events::open_event(&target.id).is_ok(),
-    };
-    if acted {
-        close_events(app);
-    }
-}
-
-/// Pops up the row's actions as a real menu, so it can reach past the edge of
-/// the popover the way a context menu does.
-#[tauri::command]
-fn show_event_actions(
-    app: AppHandle,
-    id: String,
-    join_url: Option<String>,
-    join_label: Option<String>,
-    x: f64,
-    y: f64,
-) -> Result<(), String> {
-    let Some(window) = app.get_webview_window(EVENTS_LABEL) else {
-        return Err("The events popover is not open".into());
-    };
-    let join = join_url.clone();
-    if let Ok(mut target) = app.state::<AppState>().event_actions.lock() {
-        *target = Some(EventActionTarget { id: id.clone(), join_url: join });
-    }
-    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = Vec::new();
-    if join_url.is_some() {
-        let label = join_label.unwrap_or_else(|| "Join Meeting".into());
-        items.push(Box::new(
-            MenuItem::with_id(&app, EVENT_JOIN_ITEM, label, true, None::<&str>)
-                .map_err(|error| error.to_string())?,
-        ));
-        items.push(Box::new(
-            PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?,
-        ));
-    }
-    items.push(Box::new(
-        MenuItem::with_id(&app, EVENT_OPEN_ITEM, "View in Calendar", true, None::<&str>)
-            .map_err(|error| error.to_string())?,
-    ));
-    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
-        items.iter().map(|item| item.as_ref()).collect();
-    let menu = Menu::with_items(&app, &refs).map_err(|error| error.to_string())?;
-    let state = app.state::<AppState>();
-    state.ignore_events_blur.store(true, Ordering::SeqCst);
-    let shown = menu.popup_at(
-        window.as_ref().window(),
-        Position::Logical(LogicalPosition::new(x, y)),
-    );
-    state.ignore_events_blur.store(false, Ordering::SeqCst);
-    shown.map_err(|error| error.to_string())
-}
-
 fn present_settings(app: &AppHandle) {
     close_calendar(app);
     close_events(app);
@@ -1000,18 +912,7 @@ fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
     glass::apply_calendar_glass(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        WindowEvent::Focused(false) => {
-            // A popup menu steals key; closing here would take the list out
-            // from under the menu the user just opened.
-            if handle
-                .state::<AppState>()
-                .ignore_events_blur
-                .load(Ordering::SeqCst)
-            {
-                return;
-            }
-            close_events(&handle);
-        }
+        WindowEvent::Focused(false) => close_events(&handle),
         WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             close_events(&handle);
@@ -1581,7 +1482,6 @@ pub fn run() {
                 })
                 .build(),
         )
-        .on_menu_event(|app, event| handle_event_action(app, event.id().as_ref()))
         .setup(|app| {
             let _ = app.set_activation_policy(ActivationPolicy::Accessory);
             let user_data = user_data_dir(app.handle());
@@ -1600,8 +1500,6 @@ pub fn run() {
                 dismissed_events: Mutex::new(Vec::new()),
                 shortcuts: Mutex::new(RegisteredShortcuts::default()),
                 shortcut_rebind: Mutex::new(()),
-                event_actions: Mutex::new(None),
-                ignore_events_blur: AtomicBool::new(false),
             });
             set_launch_at_login(app.handle(), initial.launch_at_login);
             build_calendar_window(app.handle())?;
@@ -1643,7 +1541,6 @@ pub fn run() {
             open_reminders_privacy,
             join_meeting,
             open_event,
-            show_event_actions,
         ])
         .run(tauri::generate_context!())
         .expect("Calendo failed to start");
