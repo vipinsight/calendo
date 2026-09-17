@@ -13,7 +13,7 @@ import { lucideIcon } from "./icons";
 import { meetingBrand } from "../shared/meetings";
 import { meetingIcon } from "./brand-icons";
 import { markPopoverMaterial, popoverHeight } from "./popover-size";
-import { ChevronRight, EyeOff, MapPin } from "lucide";
+import { EyeOff, MapPin } from "lucide";
 import { DEFAULT_SETTINGS, type AppSettings } from "../shared/settings";
 
 const api = installTauriBridge();
@@ -52,31 +52,7 @@ function openEvent(event: UpcomingEvent): void {
   void api.hideEvents();
 }
 
-/**
- * The meeting's own badge at the trailing edge: the service's mark and an
- * arrow into the call. It answers "which app is this on?" without opening
- * anything, and joins on click.
- */
-function joinBadge(event: UpcomingEvent): HTMLElement | null {
-  if (!event.joinUrl) return null;
-  const url = event.joinUrl;
-  const { brand, label } = meetingBrand(url);
-  const badge = document.createElement("button");
-  badge.type = "button";
-  badge.className = "join";
-  badge.title = label;
-  badge.setAttribute("aria-label", label);
-  badge.append(meetingIcon(brand, 13), lucideIcon(ChevronRight, 13));
-  badge.addEventListener("click", (click) => {
-    // The row underneath opens Calendar; the badge opens the call.
-    click.stopPropagation();
-    void api.joinMeeting(url);
-    void api.hideEvents();
-  });
-  return badge;
-}
-
-function eventRow(event: UpcomingEvent, options: { join?: boolean } = {}): HTMLElement {
+function eventRow(event: UpcomingEvent): HTMLElement {
   const row = document.createElement("div");
   row.className = "event interactive";
   row.setAttribute("role", "button");
@@ -90,8 +66,6 @@ function eventRow(event: UpcomingEvent, options: { join?: boolean } = {}): HTMLE
   const response = RESPONSE_LABEL[event.response];
   row.title = response ? `${title.textContent} — ${response}` : title.textContent;
   row.append(dot, title);
-  const badge = options.join ? joinBadge(event) : null;
-  if (badge) row.append(badge);
   return row;
 }
 
@@ -207,8 +181,10 @@ async function load(): Promise<void> {
           void api.dismissUpcomingEvent(featured.id, featured.endAt).then(() => void load());
         })
       : [];
-    // A meeting carries its own badge, so the list stays one line per event
-    // and the call is one click from the row it belongs to.
+    // Join belongs to the one meeting you would be joining now: the featured
+    // event, or the ongoing or next one when the lead is holding it back.
+    // Later rows carry no link, so the wrong call is never one click away.
+    const joinable = featured ?? upcoming[0] ?? null;
     let currentDay = "";
     for (const event of upcoming) {
       if (featured && sameOccurrence(event, featured)) continue;
@@ -218,7 +194,10 @@ async function load(): Promise<void> {
         currentDay = key;
         nodes.push(sectionLabel(dayLabel(date)));
       }
-      nodes.push(eventRow(event, { join: true }));
+      nodes.push(eventRow(event));
+      if (!joinable || !sameOccurrence(event, joinable)) continue;
+      const details = eventDetails(event);
+      if (details) nodes.push(details);
     }
     list.replaceChildren(...nodes);
     syncHeight();

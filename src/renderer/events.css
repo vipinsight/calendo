@@ -129,24 +129,6 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* The meeting's mark and an arrow into it, at the trailing edge of the row. */
-.join {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 1px;
-  align-items: center;
-  margin: 0;
-  padding: 0 2px 0 4px;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  opacity: 0.75;
-}
-.join:hover { opacity: 1; }
-/* Lucide strokes with currentColor, so the arrow follows the row's hover. */
-.join img { display: block; width: auto; height: 13px; max-width: 32px; }
 .detail { display: flex; flex-direction: column; }
 .detail-row { padding-left: 10px; }
 .detail-row .glyph {
