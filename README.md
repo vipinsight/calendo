@@ -47,7 +47,8 @@ pnpm dmg
 ```
 
 Then open the disk image in `src-tauri/target/release/bundle/dmg` and drag
-Calendo to Applications. See [Building](docs/building.md) for the toolchain.
+Calendo to Applications. See [Building](docs/building.md) for the toolchain
+and [Releasing](docs/release.md) to ship.
 
 ## License
 
