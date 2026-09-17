@@ -20,7 +20,13 @@ it("replaces startup permission failure when opened after granting access", asyn
     addEventListener: vi.fn(),
     createElement: () => ({ className: "", textContent: "" }),
   });
-  api.getSettings.mockResolvedValue({ upcomingHorizonHours: 24, upcomingIconLeadMinutes: 0 });
+  api.getSettings.mockResolvedValue({
+    upcomingHorizonDays: 1,
+    upcomingIconLeadMinutes: 0,
+    includeAllDayEvents: false,
+    includeEventsWithoutParticipants: true,
+    includeEventsWithoutLocation: true,
+  });
   api.getDismissedEvents.mockResolvedValue([]);
   api.getCalendarEvents.mockRejectedValueOnce("Calendar access is not enabled");
   await import("../src/renderer/events");

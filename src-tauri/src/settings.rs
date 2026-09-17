@@ -44,8 +44,21 @@ pub struct AppSettings {
     pub launch_at_login: bool,
     pub beep_on_the_hour: bool,
     pub show_upcoming_event: bool,
+    /// Days of look-ahead for the list, counted through local midnight.
+    pub upcoming_horizon_days: u16,
+    /// Read only so files from before the day window can be migrated.
+    #[allow(dead_code)]
+    #[serde(default, skip_serializing)]
     pub upcoming_horizon_hours: u8,
+    /// 0 follows the list window; 1 holds the item back until the event starts.
     pub upcoming_icon_lead_minutes: u16,
+    pub include_all_day_events: bool,
+    pub include_events_without_participants: bool,
+    pub include_events_without_location: bool,
+    pub show_event_title_in_menu_bar: bool,
+    pub show_event_time_in_menu_bar: bool,
+    pub toggle_calendar_shortcut: String,
+    pub join_meeting_shortcut: String,
     pub hidden_calendar_ids: Vec<String>,
     pub auto_update: bool,
     pub theme: String,
@@ -65,8 +78,16 @@ impl Default for AppSettings {
             launch_at_login: false,
             beep_on_the_hour: false,
             show_upcoming_event: false,
-            upcoming_horizon_hours: 24,
+            upcoming_horizon_days: 1,
+            upcoming_horizon_hours: 0,
             upcoming_icon_lead_minutes: 0,
+            include_all_day_events: false,
+            include_events_without_participants: true,
+            include_events_without_location: true,
+            show_event_title_in_menu_bar: false,
+            show_event_time_in_menu_bar: false,
+            toggle_calendar_shortcut: "Control+Command+K".into(),
+            join_meeting_shortcut: String::new(),
             hidden_calendar_ids: Vec::new(),
             auto_update: true,
             theme: "system".into(),
@@ -102,15 +123,24 @@ impl AppSettings {
         if !matches!(self.theme.as_str(), "system" | "light" | "dark") {
             self.theme = base.theme.clone();
         }
-        if !matches!(self.upcoming_horizon_hours, 24 | 48) {
-            self.upcoming_horizon_hours = base.upcoming_horizon_hours;
+        if !matches!(self.upcoming_horizon_days, 1 | 2 | 3 | 4 | 5 | 6 | 7 | 14 | 30) {
+            self.upcoming_horizon_days = base.upcoming_horizon_days;
         }
+        // Leads that no longer exist land on the nearest one that does, so an
+        // existing file does not fall back to Always.
+        self.upcoming_icon_lead_minutes = match self.upcoming_icon_lead_minutes {
+            10 => 15,
+            120 => 60,
+            other => other,
+        };
         if !matches!(
             self.upcoming_icon_lead_minutes,
-            0 | 10 | 15 | 30 | 60 | 120
+            0 | 1 | 15 | 30 | 60 | 240 | 480 | 720 | 1440
         ) {
             self.upcoming_icon_lead_minutes = base.upcoming_icon_lead_minutes;
         }
+        self.toggle_calendar_shortcut = self.toggle_calendar_shortcut.trim().to_string();
+        self.join_meeting_shortcut = self.join_meeting_shortcut.trim().to_string();
         let mut days: Vec<u8> = self
             .highlight_weekdays
             .iter()
@@ -154,6 +184,12 @@ impl SettingsStore {
                 }
                 if value.get("menuBarIcon").is_none() {
                     parsed.migrate_legacy_format();
+                }
+                if value.get("upcomingHorizonDays").is_none() {
+                    parsed.upcoming_horizon_days = match parsed.upcoming_horizon_hours {
+                        48 => 2,
+                        _ => 1,
+                    };
                 }
                 Some(parsed.normalize(&AppSettings::default()))
             })
@@ -270,33 +306,94 @@ mod tests {
     }
 
     #[test]
-    fn keeps_a_look_ahead_of_one_or_two_days_and_rejects_the_rest() {
+    fn keeps_every_look_ahead_window_and_rejects_the_rest() {
         let base = AppSettings::default();
+        for days in [1, 2, 3, 4, 5, 6, 7, 14, 30] {
+            let mut input = base.clone();
+            input.upcoming_horizon_days = days;
+            assert_eq!(input.normalize(&base).upcoming_horizon_days, days);
+        }
         let mut input = base.clone();
-        input.upcoming_horizon_hours = 24;
-        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 24);
-        input.upcoming_horizon_hours = 6;
-        assert_eq!(input.clone().normalize(&base).upcoming_horizon_hours, 24);
-        input.upcoming_horizon_hours = 48;
-        assert_eq!(input.normalize(&base).upcoming_horizon_hours, 48);
+        input.upcoming_horizon_days = 9;
+        assert_eq!(input.normalize(&base).upcoming_horizon_days, 1);
     }
 
     #[test]
     fn keeps_an_icon_lead_and_rejects_the_rest() {
         let base = AppSettings::default();
+        for minutes in [0, 1, 15, 30, 60, 240, 480, 720, 1440] {
+            let mut input = base.clone();
+            input.upcoming_icon_lead_minutes = minutes;
+            assert_eq!(
+                input.normalize(&base).upcoming_icon_lead_minutes,
+                minutes
+            );
+        }
         let mut input = base.clone();
-        input.upcoming_icon_lead_minutes = 15;
-        assert_eq!(input.clone().normalize(&base).upcoming_icon_lead_minutes, 15);
         input.upcoming_icon_lead_minutes = 20;
-        assert_eq!(input.clone().normalize(&base).upcoming_icon_lead_minutes, 0);
+        assert_eq!(input.normalize(&base).upcoming_icon_lead_minutes, 0);
+    }
+
+    #[test]
+    fn moves_retired_leads_to_the_nearest_surviving_one() {
+        let base = AppSettings::default();
+        let mut input = base.clone();
+        input.upcoming_icon_lead_minutes = 10;
+        assert_eq!(input.normalize(&base).upcoming_icon_lead_minutes, 15);
+        let mut input = base.clone();
         input.upcoming_icon_lead_minutes = 120;
-        assert_eq!(input.normalize(&base).upcoming_icon_lead_minutes, 120);
+        assert_eq!(input.normalize(&base).upcoming_icon_lead_minutes, 60);
+    }
+
+    #[test]
+    fn migrates_the_hour_look_ahead_to_days() {
+        for (hours, days) in [(24u8, 1u16), (48, 2)] {
+            let dir = std::env::temp_dir().join(format!(
+                "calendo-horizon-{hours}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&dir).expect("temp dir");
+            fs::write(
+                dir.join("settings.json"),
+                format!("{{\"upcomingHorizonHours\": {hours}}}\n"),
+            )
+            .expect("writes");
+            let store = SettingsStore::load(dir.clone());
+            assert_eq!(store.value().upcoming_horizon_days, days);
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
     fn defaults_the_look_ahead_to_the_rest_of_today() {
-        assert_eq!(AppSettings::default().upcoming_horizon_hours, 24);
+        assert_eq!(AppSettings::default().upcoming_horizon_days, 1);
         assert_eq!(AppSettings::default().upcoming_icon_lead_minutes, 0);
+    }
+
+    #[test]
+    fn defaults_the_include_filters_and_the_menu_bar_preview() {
+        let settings = AppSettings::default();
+        assert!(!settings.include_all_day_events);
+        assert!(settings.include_events_without_participants);
+        assert!(settings.include_events_without_location);
+        assert!(!settings.show_event_title_in_menu_bar);
+        assert!(!settings.show_event_time_in_menu_bar);
+        assert_eq!(settings.toggle_calendar_shortcut, "Control+Command+K");
+        assert!(settings.join_meeting_shortcut.is_empty());
+    }
+
+    #[test]
+    fn trims_recorded_shortcuts_and_keeps_an_unset_one_empty() {
+        let base = AppSettings::default();
+        let mut input = base.clone();
+        input.toggle_calendar_shortcut = "  Control+Command+J  ".into();
+        input.join_meeting_shortcut = "   ".into();
+        let settings = input.normalize(&base);
+        assert_eq!(settings.toggle_calendar_shortcut, "Control+Command+J");
+        assert!(settings.join_meeting_shortcut.is_empty());
     }
 
     #[test]
@@ -334,7 +431,11 @@ mod tests {
         assert!(body.contains("\"showWeekday\""));
         assert!(body.contains("\"beepOnTheHour\""));
         assert!(body.contains("\"showUpcomingEvent\""));
-        assert!(body.contains("\"upcomingHorizonHours\""));
+        assert!(body.contains("\"upcomingHorizonDays\""));
+        assert!(body.contains("\"includeAllDayEvents\""));
+        assert!(body.contains("\"showEventTitleInMenuBar\""));
+        assert!(body.contains("\"toggleCalendarShortcut\""));
+        assert!(!body.contains("upcomingHorizonHours"));
         assert!(body.contains("\"upcomingIconLeadMinutes\""));
         assert!(body.contains("\"hiddenCalendarIds\""));
         assert!(body.contains("\"weekStartsOn\""));

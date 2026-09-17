@@ -2,29 +2,44 @@ export type WeekStartsOn = Weekday;
 export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 export type Theme = "system" | "light" | "dark";
 export type MenuBarIconStyle = "filled" | "framed" | "calendar" | "none";
-/** Stored as 24 hours; the look-ahead actually runs through the end of today. */
-export const ONE_DAY_HORIZON = 24;
-/** Stored as 48 hours; the look-ahead actually runs through the end of tomorrow. */
-export const TWO_DAYS_HORIZON = 48;
-export const UPCOMING_HORIZON_HOURS = [ONE_DAY_HORIZON, TWO_DAYS_HORIZON] as const;
-export type UpcomingHorizonHours = (typeof UPCOMING_HORIZON_HOURS)[number];
+/** Look-ahead lengths, counted in whole local days through midnight. */
+export const UPCOMING_HORIZON_DAYS = [1, 2, 3, 4, 5, 6, 7, 14, 30] as const;
+export type UpcomingHorizonDays = (typeof UPCOMING_HORIZON_DAYS)[number];
 
-/** 0 means the icon follows the upcoming list horizon. */
+/** Hour look-aheads written before the day-based window. */
+export const ONE_DAY_HORIZON_HOURS = 24;
+export const TWO_DAYS_HORIZON_HOURS = 48;
+
+/** 0 means the events item follows the upcoming list window. */
 export const ICON_LEAD_ALWAYS = 0;
+/** 1 is a sentinel: hold the events item back until the event starts. */
+export const ICON_LEAD_AT_START = 1;
 export const UPCOMING_ICON_LEAD_MINUTES = [
-  ICON_LEAD_ALWAYS, 10, 15, 30, 60, 120,
+  ICON_LEAD_AT_START, 15, 30, 60, 240, 480, 720, 1440, ICON_LEAD_ALWAYS,
 ] as const;
 export type UpcomingIconLeadMinutes = (typeof UPCOMING_ICON_LEAD_MINUTES)[number];
 
-export function upcomingHorizonLabel(hours: UpcomingHorizonHours): string {
-  return hours === TWO_DAYS_HORIZON ? "2 days" : "1 day";
+/** Leads that no longer exist, mapped to the nearest one that does. */
+const RETIRED_ICON_LEADS: Record<number, UpcomingIconLeadMinutes> = {
+  10: 15,
+  120: 60,
+};
+
+export function upcomingHorizonLabel(days: UpcomingHorizonDays): string {
+  if (days === 1) return "Today";
+  if (days === 2) return "Today and tomorrow";
+  if (days === 7) return "1 week";
+  if (days === 14) return "2 weeks";
+  if (days === 30) return "1 month";
+  return `${days} days`;
 }
 
 export function upcomingIconLeadLabel(minutes: UpcomingIconLeadMinutes): string {
   if (minutes === ICON_LEAD_ALWAYS) return "Always show";
-  if (minutes === 60) return "1 hour before";
-  if (minutes === 120) return "2 hours before";
-  return `${minutes} minutes before`;
+  if (minutes === ICON_LEAD_AT_START) return "At start of event";
+  if (minutes < 60) return `${minutes} minutes before`;
+  const hours = minutes / 60;
+  return hours === 1 ? "1 hour before" : `${hours} hours before`;
 }
 
 export type AppSettings = {
@@ -37,9 +52,27 @@ export type AppSettings = {
   launchAtLogin: boolean;
   beepOnTheHour: boolean;
   showUpcomingEvent: boolean;
-  upcomingHorizonHours: UpcomingHorizonHours;
-  /** Minutes before start to show the events icon. 0 follows the list horizon. */
+  /** Days of look-ahead for the popover list, counted through local midnight. */
+  upcomingHorizonDays: UpcomingHorizonDays;
+  /**
+   * Minutes before start to show the events item. 0 follows the list window,
+   * 1 holds it back until the event starts.
+   */
   upcomingIconLeadMinutes: UpcomingIconLeadMinutes;
+  /** All-day events and reminders in the list and on the events item. */
+  includeAllDayEvents: boolean;
+  /** Solo blocks: events nobody else was invited to. */
+  includeEventsWithoutParticipants: boolean;
+  /** Events with neither a meeting link nor a place. */
+  includeEventsWithoutLocation: boolean;
+  /** Event name beside the countdown glyph. */
+  showEventTitleInMenuBar: boolean;
+  /** Start time, or the time left, beside the countdown glyph. */
+  showEventTimeInMenuBar: boolean;
+  /** System-wide chord that toggles the month popover. Empty is unset. */
+  toggleCalendarShortcut: string;
+  /** System-wide chord that opens the previewed meeting link. Empty is unset. */
+  joinMeetingShortcut: string;
   /** EventKit identifiers the upcoming-event list should ignore. Empty shows every calendar. */
   hiddenCalendarIds: string[];
   autoUpdate: boolean;
@@ -130,8 +163,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   launchAtLogin: false,
   beepOnTheHour: false,
   showUpcomingEvent: false,
-  upcomingHorizonHours: ONE_DAY_HORIZON,
+  upcomingHorizonDays: 1,
   upcomingIconLeadMinutes: ICON_LEAD_ALWAYS,
+  includeAllDayEvents: false,
+  includeEventsWithoutParticipants: true,
+  includeEventsWithoutLocation: true,
+  showEventTitleInMenuBar: false,
+  showEventTimeInMenuBar: false,
+  toggleCalendarShortcut: "Control+Command+K",
+  joinMeetingShortcut: "",
   hiddenCalendarIds: [],
   autoUpdate: true,
   theme: "system",
@@ -140,7 +180,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const ICON_IDS = new Set(MENU_BAR_ICONS.map((item) => item.id));
 const WEEK_START_IDS = new Set(WEEK_STARTS.map((item) => item.id));
 const THEMES = new Set<Theme>(["system", "light", "dark"]);
-const HORIZON_HOURS = new Set<number>(UPCOMING_HORIZON_HOURS);
+const HORIZON_DAYS = new Set<number>(UPCOMING_HORIZON_DAYS);
 const ICON_LEAD_MINUTES = new Set<number>(UPCOMING_ICON_LEAD_MINUTES);
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -316,6 +356,30 @@ function migrateMenuBar(
   };
 }
 
+/**
+ * Day windows replaced the 24 / 48 hour look-ahead. Older files carry the
+ * hours, which stood for the same two windows.
+ */
+function normalizeHorizonDays(input: Record<string, unknown>): UpcomingHorizonDays {
+  const days = input.upcomingHorizonDays;
+  if (HORIZON_DAYS.has(days as number)) return days as UpcomingHorizonDays;
+  const hours = input.upcomingHorizonHours;
+  if (hours === TWO_DAYS_HORIZON_HOURS) return 2;
+  if (hours === ONE_DAY_HORIZON_HOURS) return 1;
+  return DEFAULT_SETTINGS.upcomingHorizonDays;
+}
+
+function normalizeIconLead(value: unknown): UpcomingIconLeadMinutes {
+  if (ICON_LEAD_MINUTES.has(value as number)) return value as UpcomingIconLeadMinutes;
+  const retired = RETIRED_ICON_LEADS[value as number];
+  return retired ?? DEFAULT_SETTINGS.upcomingIconLeadMinutes;
+}
+
+/** A recorded chord, or the fallback when the file holds something else. */
+function normalizeShortcut(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
 export function normalizeSettings(raw: unknown): AppSettings {
   const input =
     raw && typeof raw === "object" && !Array.isArray(raw)
@@ -349,12 +413,36 @@ export function normalizeSettings(raw: unknown): AppSettings {
       input.showUpcomingEvent,
       DEFAULT_SETTINGS.showUpcomingEvent,
     ),
-    upcomingHorizonHours: HORIZON_HOURS.has(input.upcomingHorizonHours as number)
-      ? (input.upcomingHorizonHours as UpcomingHorizonHours)
-      : DEFAULT_SETTINGS.upcomingHorizonHours,
-    upcomingIconLeadMinutes: ICON_LEAD_MINUTES.has(input.upcomingIconLeadMinutes as number)
-      ? (input.upcomingIconLeadMinutes as UpcomingIconLeadMinutes)
-      : DEFAULT_SETTINGS.upcomingIconLeadMinutes,
+    upcomingHorizonDays: normalizeHorizonDays(input),
+    upcomingIconLeadMinutes: normalizeIconLead(input.upcomingIconLeadMinutes),
+    includeAllDayEvents: asBoolean(
+      input.includeAllDayEvents,
+      DEFAULT_SETTINGS.includeAllDayEvents,
+    ),
+    includeEventsWithoutParticipants: asBoolean(
+      input.includeEventsWithoutParticipants,
+      DEFAULT_SETTINGS.includeEventsWithoutParticipants,
+    ),
+    includeEventsWithoutLocation: asBoolean(
+      input.includeEventsWithoutLocation,
+      DEFAULT_SETTINGS.includeEventsWithoutLocation,
+    ),
+    showEventTitleInMenuBar: asBoolean(
+      input.showEventTitleInMenuBar,
+      DEFAULT_SETTINGS.showEventTitleInMenuBar,
+    ),
+    showEventTimeInMenuBar: asBoolean(
+      input.showEventTimeInMenuBar,
+      DEFAULT_SETTINGS.showEventTimeInMenuBar,
+    ),
+    toggleCalendarShortcut: normalizeShortcut(
+      input.toggleCalendarShortcut,
+      DEFAULT_SETTINGS.toggleCalendarShortcut,
+    ),
+    joinMeetingShortcut: normalizeShortcut(
+      input.joinMeetingShortcut,
+      DEFAULT_SETTINGS.joinMeetingShortcut,
+    ),
     hiddenCalendarIds:
       "hiddenCalendarIds" in input
         ? normalizeHiddenCalendarIds(input.hiddenCalendarIds)
