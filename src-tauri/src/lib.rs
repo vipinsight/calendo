@@ -6,6 +6,7 @@
 mod beep;
 mod events;
 mod glass;
+mod popover;
 mod settings;
 
 use serde::Serialize;
@@ -590,25 +591,39 @@ fn position_events(app: &AppHandle, tray_rect: tauri::Rect) {
     let _ = window.set_position(Position::Logical(LogicalPosition::new(x, y)));
 }
 
+fn popover_visible(app: &AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// Shows a popover the way a menu extra appears: over the front app, without
+/// disturbing it.
+///
+/// `show()` is `makeKeyAndOrderFront:`. On a nonactivating panel that makes the
+/// popover key — so hover, clicks and arrow keys all reach it — while Calendo
+/// stays inactive and the app the user was in keeps the caret and the menu bar.
+/// `set_focus()` would add `activateIgnoringOtherApps:` on top, and that is the
+/// focus theft itself.
+fn show_popover(window: &WebviewWindow) {
+    let _ = window.show();
+}
+
 fn show_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
     close_events(app);
     cancel_fade(app, CALENDAR_LABEL);
     position_calendar(app, tray_rect);
     if let Some(window) = app.get_webview_window(CALENDAR_LABEL) {
-        let _ = window.show();
+        show_popover(&window);
         // Showing can let AppKit park the window on the previous screen.
         position_calendar(app, tray_rect);
-        let _ = window.set_focus();
     }
     set_status_item_highlight(app, TRAY_ID, true);
     let _ = app.emit("calendar-shown", ());
 }
 
 fn toggle_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
-    let visible = app
-        .get_webview_window(CALENDAR_LABEL)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false);
+    let visible = popover_visible(app, CALENDAR_LABEL);
     let just_closed = app
         .state::<AppState>()
         .calendar_closed_at
@@ -634,17 +649,13 @@ fn show_events(app: &AppHandle, tray_rect: tauri::Rect) {
     let Some(window) = app.get_webview_window(EVENTS_LABEL) else {
         return;
     };
-    let _ = window.show();
-    let _ = window.set_focus();
+    show_popover(&window);
     set_status_item_highlight(app, EVENT_TRAY_ID, true);
     let _ = window.emit("events-shown", ());
 }
 
 fn toggle_events(app: &AppHandle, tray_rect: tauri::Rect) {
-    let visible = app
-        .get_webview_window(EVENTS_LABEL)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false);
+    let visible = popover_visible(app, EVENTS_LABEL);
     let just_closed = closed_at(&app.state::<AppState>(), EVENTS_LABEL)
         .lock()
         .map(|closed| closed.is_some_and(|at| at.elapsed() < REOPEN_GUARD))
@@ -870,12 +881,16 @@ fn build_calendar_window(app: &AppHandle) -> tauri::Result<()> {
             .build()?;
 
     glass::apply_calendar_glass(&window);
+    popover::as_nonactivating_panel(&window);
 
     let handle = app.clone();
     window.on_window_event(move |event| match event {
-        // Closing on the spot, rather than after a delay, keeps the popover
-        // from being left visible but inactive — long enough for the glass to
-        // paint its subdued state before the window goes away.
+        // The panel holds key while Calendo is inactive, so it resigns key
+        // the moment the user turns to anything else — which is the click
+        // outside a menu extra closes on. Closing on the spot, rather than
+        // after a delay, keeps the popover from being left visible but
+        // inactive — long enough for the glass to paint its subdued state
+        // before the window goes away.
         WindowEvent::Focused(false) => {
             let state = handle.state::<AppState>();
             if state.calendar_pinned.load(Ordering::SeqCst) {
@@ -912,6 +927,7 @@ fn build_events_window(app: &AppHandle) -> tauri::Result<()> {
             .focused(false)
             .build()?;
     glass::apply_calendar_glass(&window);
+    popover::as_nonactivating_panel(&window);
     let handle = app.clone();
     window.on_window_event(move |event| match event {
         WindowEvent::Focused(false) => close_events(&handle),
