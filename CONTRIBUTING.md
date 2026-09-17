@@ -11,7 +11,8 @@ For security issues, use [private reporting](SECURITY.md).
 3. Make the change and update relevant docs. Run `pnpm typecheck`, `pnpm test`,
    and `pnpm build` for code changes.
 4. Commit and push your branch, then open a pull request against `main`.
-5. Respond to review feedback. The maintainer handles merging and releases.
+5. Respond to review feedback. The maintainer handles merging and
+   [releases](docs/release.md).
 
 ## What is in scope
 
