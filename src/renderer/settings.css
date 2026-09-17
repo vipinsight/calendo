@@ -244,6 +244,45 @@ body {
   opacity: 0.5;
 }
 
+/* The recording field borrows the select's shape: a control, not a push button. */
+.row .shortcut {
+  flex-shrink: 0;
+  min-width: 110px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--ink);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0.5px 0 rgb(0 0 0 / 8%);
+}
+
+.row .shortcut.is-unset,
+.row .shortcut.is-recording {
+  color: var(--ink-soft);
+}
+
+.row .shortcut.is-recording {
+  border-color: var(--accent);
+}
+
+.row .shortcut:disabled {
+  opacity: 0.5;
+}
+
+.row .action.subtle {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: var(--ink-soft);
+}
+
+.row .action.subtle:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
 .calendar-sources[hidden] {
   display: none;
 }

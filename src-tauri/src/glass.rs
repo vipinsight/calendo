@@ -33,7 +33,7 @@ pub fn is_liquid_glass() -> bool {
 /// length AppKit takes over it.
 pub const FADE: std::time::Duration = std::time::Duration::from_millis(160);
 
-pub(crate) fn window_object(window: &tauri::WebviewWindow) -> Option<&AnyObject> {
+fn window_object(window: &tauri::WebviewWindow) -> Option<&AnyObject> {
     let pointer = window.ns_window().ok()?;
     if pointer.is_null() {
         return None;
