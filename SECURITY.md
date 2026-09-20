@@ -7,7 +7,7 @@ backported fixes. Please update before reproducing an issue when possible.
 
 ## Report a vulnerability privately
 
-Use [GitHub private vulnerability reporting](https://github.com/vipiny35/calendo/security/advisories/new).
+Use [GitHub private vulnerability reporting](https://github.com/vipinsight/calendo/security/advisories/new).
 Do not post exploit details or credentials in a public issue or pull request.
 If private reporting is unavailable, open an issue asking the maintainer to
 enable it, without including vulnerability details.
@@ -17,4 +17,4 @@ impact. The maintainer will coordinate investigation and disclosure privately.
 This is a volunteer project; there is no guaranteed response time or paid
 support SLA.
 
-Ordinary bugs belong in the [issue tracker](https://github.com/vipiny35/calendo/issues).
+Ordinary bugs belong in the [issue tracker](https://github.com/vipinsight/calendo/issues).

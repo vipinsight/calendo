@@ -42,7 +42,7 @@ const EVENT_TRAY_ID: &str = "calendo-event";
 const AUTOSTART_ARG: &str = "--autostart";
 const CALENDAR_WIDTH: f64 = 264.0;
 const CALENDAR_WIDTH_WEEKS: f64 = 288.0;
-const CALENDAR_HEIGHT: f64 = 296.0;
+const CALENDAR_HEIGHT: f64 = 324.0;
 /// Wide enough that a row's explanation sits on one line beside its control,
 /// which is what keeps the grouped lists readable.
 const SETTINGS_WIDTH: f64 = 780.0;
@@ -256,33 +256,152 @@ fn close_events(app: &AppHandle) {
     set_status_item_highlight(app, EVENT_TRAY_ID, false);
 }
 
+/// How far the backdrop overhangs the status item button, in points per edge.
+///
+/// AppKit's own highlight, measured on this very button while its menu is up,
+/// runs 2pt wider and 1pt taller per edge: a 34x22pt button gets a 38x24pt
+/// wash. Only the vertical half is ours to copy. The system draws in the menu
+/// bar itself, while we draw inside the status item's window, and that window
+/// is exactly the item's width -- a wider subview is clipped, which slices the
+/// round ends off the capsule. It is taller than the button, so the 1pt is
+/// free. The result sits 2pt narrower per side than a system item.
+#[cfg(target_os = "macos")]
+const MENU_BAR_HIGHLIGHT_OVERHANG: (f64, f64) = (0.0, 1.0);
+/// The continuous corner that goes with it.
+#[cfg(target_os = "macos")]
+const MENU_BAR_HIGHLIGHT_RADIUS: f64 = 11.0;
+
+/// Paints the "this popover is open" backdrop behind a status item.
+///
+/// There is no API that holds it for us. `NSStatusBarButton`'s own highlight
+/// is not it: AppKit paints that only while it runs the button's mouse-down
+/// tracking or while an `NSMenu` is up, and `tray-icon` clears it in its
+/// `mouseUp:` anyway. Setting `isHighlighted` back afterwards is inert -- it
+/// reads `true` for as long as the window is open with nothing drawn. Control
+/// Center and OneDrive show the backdrop under plain panels, so the look is
+/// not menu-only; it just has to be drawn. We slip AppKit's own selection
+/// material behind the button's content, which keeps it right in both themes
+/// and over any wallpaper.
+#[cfg(target_os = "macos")]
+fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
+    use objc2::rc::Retained;
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+        NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+    };
+    use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+    use objc2_quartz_core::kCACornerCurveContinuous;
+
+    let Some(tray) = app.tray_by_id(id) else {
+        return;
+    };
+    let _ = tray.with_inner_tray_icon(move |inner| {
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(button) = item.button(mtm) else {
+            return;
+        };
+
+        // The view is its own marker: ours is the only effect view under this
+        // button, so clearing means dropping whatever we added last time.
+        let existing: Vec<Retained<NSVisualEffectView>> = button
+            .subviews()
+            .iter()
+            .filter_map(|view| view.downcast_ref::<NSVisualEffectView>().map(Retained::from))
+            .collect();
+        for view in existing {
+            view.removeFromSuperview();
+        }
+        if !highlighted {
+            return;
+        }
+
+        let bounds = button.bounds();
+        let (over_x, over_y) = MENU_BAR_HIGHLIGHT_OVERHANG;
+        let frame = NSRect::new(
+            NSPoint::new(bounds.origin.x - over_x, bounds.origin.y - over_y),
+            NSSize::new(
+                bounds.size.width + over_x * 2.0,
+                bounds.size.height + over_y * 2.0,
+            ),
+        );
+        let backdrop = NSVisualEffectView::initWithFrame(mtm.alloc::<NSVisualEffectView>(), frame);
+        backdrop.setMaterial(NSVisualEffectMaterial::Selection);
+        backdrop.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        backdrop.setState(NSVisualEffectState::Active);
+        backdrop.setEmphasized(false);
+        // Follow the item's width; the vertical overhang is fixed, so the
+        // margins float rather than letting the height snap back to bounds.
+        backdrop.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewMinYMargin
+                | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
+        backdrop.setWantsLayer(true);
+        if let Some(layer) = backdrop.layer() {
+            layer.setCornerRadius(MENU_BAR_HIGHLIGHT_RADIUS.min(frame.size.height / 2.0));
+            layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+            layer.setMasksToBounds(true);
+        }
+        // Below the glyph, so the icon and any clock text stay on top.
+        button.addSubview_positioned_relativeTo(&backdrop, NSWindowOrderingMode::Below, None);
+    });
+}
+
 /// AppKit answers only on the main thread, and blur handling reaches this from
 /// a timer thread, where a marker cannot be had and the call would be dropped.
 #[cfg(target_os = "macos")]
 fn set_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
     use objc2_foundation::MainThreadMarker;
-    let id = id.to_string();
+
+    if MainThreadMarker::new().is_some() {
+        paint_status_item_highlight(app, id, highlighted);
+        return;
+    }
+    let tray_id = id.to_string();
     let handle = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
-        let Some(tray) = handle.tray_by_id(&id) else {
-            return;
-        };
-        let _ = tray.with_inner_tray_icon(move |inner| {
-            let Some(item) = inner.ns_status_item() else {
-                return;
-            };
-            let Some(mtm) = MainThreadMarker::new() else {
-                return;
-            };
-            if let Some(button) = item.button(mtm) {
-                button.setHighlighted(highlighted);
-            }
-        });
+        paint_status_item_highlight(&handle, &tray_id, highlighted);
     });
 }
 
 #[cfg(not(target_os = "macos"))]
 fn set_status_item_highlight(_app: &AppHandle, _id: &str, _highlighted: bool) {}
+
+/// Lays the status item out for what it actually carries.
+///
+/// `tray-icon` sets `NSImageLeft` whenever an image is set and never resets
+/// it, so a glyph plus the empty title we always write reserves room for that
+/// missing title and leaves a gap on the right of the icon. Reading the button
+/// back rather than trusting the caller keeps this right when only one of the
+/// pair changed.
+#[cfg(target_os = "macos")]
+fn align_status_item_content(tray: &tauri::tray::TrayIcon) {
+    use objc2_app_kit::NSCellImagePosition;
+    use objc2_foundation::MainThreadMarker;
+
+    let _ = tray.with_inner_tray_icon(|inner| {
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(button) = item.button(mtm) else {
+            return;
+        };
+        let position = match (button.image().is_some(), !button.title().to_string().is_empty()) {
+            (true, true) => NSCellImagePosition::ImageLeft,
+            (true, false) => NSCellImagePosition::ImageOnly,
+            (false, _) => NSCellImagePosition::NoImage,
+        };
+        button.setImagePosition(position);
+    });
+}
 
 /// What a status-item click should do. Split out so the left/right split can
 /// be tested without standing up a menu bar extra.
@@ -355,6 +474,13 @@ fn remember_status_item_menu(tray: &tauri::tray::TrayIcon, share: &TrayMenuShare
 
 #[cfg(target_os = "macos")]
 fn present_status_item_menu(tray: &tauri::tray::TrayIcon, menu: &TrayMenu) {
+    // AppKit backdrops the item itself while a menu is up, so ours would sit
+    // under a second, differently sized wash. Stand it down for the duration
+    // and put it back if the popover outlived the menu.
+    let app = tray.app_handle().clone();
+    let id = tray.id().as_ref().to_string();
+    paint_status_item_highlight(&app, &id, false);
+
     // `NSMenu` is not Send, and `with_inner_tray_icon` requires a Send
     // closure, so the retained menu stays here and only a pointer crosses.
     let menu_ptr = objc2::rc::Retained::as_ptr(&menu.0) as usize;
@@ -368,6 +494,19 @@ fn present_status_item_menu(tray: &tauri::tray::TrayIcon, menu: &TrayMenu) {
         #[allow(deprecated)]
         item.popUpStatusItemMenu(menu);
     });
+
+    // `popUpStatusItemMenu` runs the menu's tracking loop, so it has been
+    // dismissed by the time we get here.
+    let label = match id.as_str() {
+        TRAY_ID => Some(CALENDAR_LABEL),
+        EVENT_TRAY_ID => Some(EVENTS_LABEL),
+        _ => None,
+    };
+    let showing = label
+        .and_then(|label| app.get_webview_window(label))
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    paint_status_item_highlight(&app, &id, showing);
 }
 
 fn handle_tray_click(
@@ -385,6 +524,17 @@ fn handle_tray_click(
     else {
         return;
     };
+    // Not an intent: whatever the click goes on to do, the press look is
+    // AppKit's for the duration. It paints its own wash on mouse-down, wider
+    // than anything we can fit inside the item's window, and two translucent
+    // washes stack into one too-bright blob. `tray-icon` sends this event
+    // before it highlights, so standing ours down here means the two are
+    // never on screen together. Mouse-up clears AppKit's before the toggle
+    // runs, which puts ours back if the popover stayed open.
+    #[cfg(target_os = "macos")]
+    if (button, button_state) == (MouseButton::Left, MouseButtonState::Down) {
+        paint_status_item_highlight(tray.app_handle(), tray.id().as_ref(), false);
+    }
     match tray_click_intent(button, button_state) {
         TrayClickIntent::Toggle => toggle(tray.app_handle(), rect),
         TrayClickIntent::Menu => {
@@ -591,6 +741,7 @@ fn position_events(app: &AppHandle, tray_rect: tauri::Rect) {
 }
 
 fn show_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
+    set_status_item_highlight(app, TRAY_ID, true);
     close_events(app);
     cancel_fade(app, CALENDAR_LABEL);
     position_calendar(app, tray_rect);
@@ -600,7 +751,6 @@ fn show_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
         position_calendar(app, tray_rect);
         let _ = window.set_focus();
     }
-    set_status_item_highlight(app, TRAY_ID, true);
     let _ = app.emit("calendar-shown", ());
 }
 
@@ -628,6 +778,7 @@ fn toggle_calendar(app: &AppHandle, tray_rect: tauri::Rect) {
 }
 
 fn show_events(app: &AppHandle, tray_rect: tauri::Rect) {
+    set_status_item_highlight(app, EVENT_TRAY_ID, true);
     close_calendar(app);
     cancel_fade(app, EVENTS_LABEL);
     position_events(app, tray_rect);
@@ -636,7 +787,6 @@ fn show_events(app: &AppHandle, tray_rect: tauri::Rect) {
     };
     let _ = window.show();
     let _ = window.set_focus();
-    set_status_item_highlight(app, EVENT_TRAY_ID, true);
     let _ = window.emit("events-shown", ());
 }
 
@@ -772,6 +922,9 @@ fn dismiss_settings(app: &AppHandle) {
 fn handle_menu_action(app: &AppHandle, id: &str) {
     match id {
         "settings" => present_settings(app),
+        "date-time" => {
+            let _ = events::open_date_time_settings();
+        }
         "quit" => app.exit(0),
         _ => {}
     }
@@ -779,12 +932,20 @@ fn handle_menu_action(app: &AppHandle, id: &str) {
 
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let date_time = MenuItem::with_id(
+        app,
+        "date-time",
+        "Date & Time Settings…",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit Calendo", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     Menu::with_items(
         app,
         &[
             &settings as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
+            &date_time,
             &separator,
             &quit,
         ],
@@ -1071,6 +1232,8 @@ fn set_tray_label(
         if showing {
             let _ = tray.set_icon_as_template(true);
         }
+        #[cfg(target_os = "macos")]
+        align_status_item_content(&tray);
     });
 }
 
@@ -1100,6 +1263,8 @@ fn set_event_tray_label(
         // set_title(None) leaves the previous native title in place on macOS,
         // so turning the title or time off writes an explicit empty string.
         let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
+        #[cfg(target_os = "macos")]
+        align_status_item_content(&tray);
     });
 }
 
@@ -1398,7 +1563,7 @@ async fn check_for_updates(app: AppHandle) -> Result<UpdateOffer, String> {
 
 /// Shown on the About pane, and the way out when an update cannot be applied
 /// and the only route left is a hand-installed disk image.
-const REPOSITORY_URL: &str = "https://github.com/vipiny35/calendo";
+const REPOSITORY_URL: &str = "https://github.com/vipinsight/calendo";
 
 /// An update that will not verify is not a transient failure: this build's
 /// public key cannot attribute it to whoever signs releases, and no retry

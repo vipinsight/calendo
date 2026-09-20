@@ -32,7 +32,7 @@ the first time a system-wide shortcut fires.
 ## Install
 
 Download the disk image from
-[Releases](https://github.com/vipiny35/calendo/releases/latest) and drag
+[Releases](https://github.com/vipinsight/calendo/releases/latest) and drag
 Calendo to Applications.
 
 Installed copies can update themselves from Settings → About. Automatic

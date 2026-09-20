@@ -30,7 +30,7 @@ const SIGNING_KEYS = [
   ),
   join(homedir(), ".calendo", "updater.key"),
 ];
-const REPOSITORY = "vipiny35/calendo";
+const REPOSITORY = "vipinsight/calendo";
 
 function loadCredentials() {
   if (!existsSync(ENV_FILE)) return;
