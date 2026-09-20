@@ -26,7 +26,7 @@ import { eventGlyphPng, framedGlyphPng } from "./tray-frame";
 import { markPopoverMaterial } from "./popover-size";
 import { bandBox } from "./column-bands";
 import { installTauriBridge, type DesktopApi } from "./host";
-import { ChevronLeft, ChevronRight, Dot, Video } from "lucide";
+import { ChevronLeft, ChevronRight, Dot, Settings, Video } from "lucide";
 
 function requireElement<T extends HTMLElement>(id: string): T {
   const node = document.getElementById(id);
@@ -136,9 +136,11 @@ function startCalendar(api: DesktopApi): void {
   const dayEventsTitle = requireElement<HTMLElement>("day-events-title");
   const dayEventsCount = requireElement<HTMLElement>("day-events-count");
   const dayEventsList = requireElement<HTMLElement>("day-events-list");
+  const openSettings = requireElement<HTMLButtonElement>("open-settings");
   prev.append(lucideIcon(ChevronLeft, 18));
   todayButton.append(lucideIcon(Dot, 20, { "stroke-width": 10 }));
   next.append(lucideIcon(ChevronRight, 18));
+  openSettings.append(lucideIcon(Settings, 16));
   joinMeeting.append(lucideIcon(Video, 15), document.createTextNode("Join Meeting"));
 
   let settings: AppSettings | null = null;
@@ -454,6 +456,9 @@ function startCalendar(api: DesktopApi): void {
     void api.joinMeeting(url).then(() => api.hideCalendar());
   };
   joinMeeting.addEventListener("click", joinUpcoming);
+  openSettings.addEventListener("click", () => {
+    void api.openSettings();
+  });
   calendarAccess.addEventListener("click", async () => {
     calendarAccess.disabled = true;
     try {

@@ -42,7 +42,7 @@ const EVENT_TRAY_ID: &str = "calendo-event";
 const AUTOSTART_ARG: &str = "--autostart";
 const CALENDAR_WIDTH: f64 = 264.0;
 const CALENDAR_WIDTH_WEEKS: f64 = 288.0;
-const CALENDAR_HEIGHT: f64 = 296.0;
+const CALENDAR_HEIGHT: f64 = 324.0;
 /// Wide enough that a row's explanation sits on one line beside its control,
 /// which is what keeps the grouped lists readable.
 const SETTINGS_WIDTH: f64 = 780.0;
@@ -101,6 +101,11 @@ struct AppState {
     /// mid-fade bumps the count and the pending hide stands down.
     calendar_fade: AtomicU64,
     events_fade: AtomicU64,
+    /// Desired menu-bar highlight while a custom popover is open. AppKit only
+    /// keeps the backdrop for an NSMenu; for our windows we drive it and
+    /// re-assert it after mouse-up and tray icon repaints clear it.
+    calendar_tray_highlighted: AtomicBool,
+    event_tray_highlighted: AtomicBool,
     dismissed_events: Mutex<Vec<events::DismissedOccurrence>>,
     /// The chords currently registered with the system, so a failed rebind
     /// can leave the working one in place. Held only to read or write the
@@ -258,31 +263,150 @@ fn close_events(app: &AppHandle) {
 
 /// AppKit answers only on the main thread, and blur handling reaches this from
 /// a timer thread, where a marker cannot be had and the call would be dropped.
+///
+/// `tray-icon` clears the status-item backdrop in its `mouseUp:` handler before
+/// our click callback runs. Menus keep the backdrop natively; custom popovers
+/// have to latch it themselves and re-assert after that mouse-up clears it.
+#[cfg(target_os = "macos")]
+fn tray_highlight_flag<'a>(state: &'a AppState, id: &str) -> Option<&'a AtomicBool> {
+    match id {
+        TRAY_ID => Some(&state.calendar_tray_highlighted),
+        EVENT_TRAY_ID => Some(&state.event_tray_highlighted),
+        _ => None,
+    }
+}
+
+/// Paints or clears the status-item backdrop. Must run on the main thread.
+#[cfg(target_os = "macos")]
+fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
+    use objc2_app_kit::NSButtonType;
+    use objc2_foundation::MainThreadMarker;
+
+    let Some(tray) = app.tray_by_id(id) else {
+        return;
+    };
+    let _ = tray.with_inner_tray_icon(move |inner| {
+        let Some(item) = inner.ns_status_item() else {
+            return;
+        };
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let Some(button) = item.button(mtm) else {
+            return;
+        };
+        // On/Off keeps the pressed backdrop after mouse-up; momentary types
+        // drop it as soon as `tray-icon` clears the highlight in mouseUp.
+        button.setButtonType(NSButtonType::OnOff);
+        button.setState(if highlighted { 1 } else { 0 });
+        button.highlight(highlighted);
+        button.setHighlighted(highlighted);
+        button.display();
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn reassert_tray_highlights(app: &AppHandle) {
+    for id in [TRAY_ID, EVENT_TRAY_ID] {
+        let desired = tray_highlight_flag(&app.state::<AppState>(), id)
+            .is_some_and(|flag| flag.load(Ordering::SeqCst));
+        paint_status_item_highlight(app, id, desired);
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn set_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
     use objc2_foundation::MainThreadMarker;
-    let id = id.to_string();
-    let handle = app.clone();
-    let _ = app.clone().run_on_main_thread(move || {
-        let Some(tray) = handle.tray_by_id(&id) else {
-            return;
-        };
-        let _ = tray.with_inner_tray_icon(move |inner| {
-            let Some(item) = inner.ns_status_item() else {
-                return;
-            };
-            let Some(mtm) = MainThreadMarker::new() else {
-                return;
-            };
-            if let Some(button) = item.button(mtm) {
-                button.setHighlighted(highlighted);
-            }
+
+    if let Some(flag) = tray_highlight_flag(&app.state::<AppState>(), id) {
+        flag.store(highlighted, Ordering::SeqCst);
+    }
+
+    // Tray clicks already run on the main thread; paint immediately so we are
+    // not racing `tray-icon`'s mouseUp clear through a queued task alone.
+    if MainThreadMarker::new().is_some() {
+        paint_status_item_highlight(app, id, highlighted);
+    } else {
+        let tray_id = id.to_string();
+        let handle = app.clone();
+        let _ = app.clone().run_on_main_thread(move || {
+            paint_status_item_highlight(&handle, &tray_id, highlighted);
         });
+    }
+
+    if !highlighted {
+        return;
+    }
+
+    // Re-assert after mouse-up finishes and after the renderer repaints the
+    // tray glyph, both of which clear a momentary highlight.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for delay_ms in [0_u64, 16, 50, 120, 250] {
+            if delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(delay_ms));
+            }
+            let app = handle.clone();
+            let _ = handle.clone().run_on_main_thread(move || {
+                reassert_tray_highlights(&app);
+            });
+        }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn restore_status_item_highlight(app: &AppHandle, id: &str) {
+    let desired = tray_highlight_flag(&app.state::<AppState>(), id)
+        .is_some_and(|flag| flag.load(Ordering::SeqCst));
+    paint_status_item_highlight(app, id, desired);
+}
+
+/// After `tray-icon` clears the backdrop in mouseUp, the next main-queue turn
+/// puts it back for whichever popover is still open.
+#[cfg(target_os = "macos")]
+fn install_tray_highlight_monitor(app: &AppHandle) {
+    use std::ptr::NonNull;
+
+    use block2::RcBlock;
+    use objc2_app_kit::{NSEvent, NSEventMask};
+    use objc2_foundation::MainThreadMarker;
+    use std::sync::OnceLock;
+
+    static APP: OnceLock<AppHandle> = OnceLock::new();
+    if APP.set(app.clone()).is_err() {
+        return;
+    }
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+        if let Some(app) = APP.get() {
+            let app = app.clone();
+            let _ = app.clone().run_on_main_thread(move || {
+                reassert_tray_highlights(&app);
+            });
+        }
+        event.as_ptr()
+    });
+    unsafe {
+        let _ = NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseUp,
+            &block,
+        );
+    }
+    // The system retains the monitor; keep the block alive with it.
+    std::mem::forget(block);
 }
 
 #[cfg(not(target_os = "macos"))]
 fn set_status_item_highlight(_app: &AppHandle, _id: &str, _highlighted: bool) {}
+
+#[cfg(not(target_os = "macos"))]
+fn restore_status_item_highlight(_app: &AppHandle, _id: &str) {}
+
+#[cfg(not(target_os = "macos"))]
+fn install_tray_highlight_monitor(_app: &AppHandle) {}
 
 /// What a status-item click should do. Split out so the left/right split can
 /// be tested without standing up a menu bar extra.
@@ -841,6 +965,8 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     remember_status_item_menu(&event_tray, &status_menu);
     let _ = event_tray.set_visible(false);
+    #[cfg(target_os = "macos")]
+    install_tray_highlight_monitor(app);
     Ok(())
 }
 
@@ -1071,6 +1197,8 @@ fn set_tray_label(
         if showing {
             let _ = tray.set_icon_as_template(true);
         }
+        #[cfg(target_os = "macos")]
+        restore_status_item_highlight(&app, TRAY_ID);
     });
 }
 
@@ -1100,6 +1228,8 @@ fn set_event_tray_label(
         // set_title(None) leaves the previous native title in place on macOS,
         // so turning the title or time off writes an explicit empty string.
         let _ = tray.set_title(Some(title.as_deref().unwrap_or("")));
+        #[cfg(target_os = "macos")]
+        restore_status_item_highlight(&app, EVENT_TRAY_ID);
     });
 }
 
@@ -1499,6 +1629,8 @@ pub fn run() {
                 events_closed_at: Mutex::new(None),
                 calendar_fade: AtomicU64::new(0),
                 events_fade: AtomicU64::new(0),
+                calendar_tray_highlighted: AtomicBool::new(false),
+                event_tray_highlighted: AtomicBool::new(false),
                 dismissed_events: Mutex::new(Vec::new()),
                 shortcuts: Mutex::new(RegisteredShortcuts::default()),
                 shortcut_rebind: Mutex::new(()),
