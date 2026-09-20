@@ -1528,7 +1528,7 @@ async fn check_for_updates(app: AppHandle) -> Result<UpdateOffer, String> {
 
 /// Shown on the About pane, and the way out when an update cannot be applied
 /// and the only route left is a hand-installed disk image.
-const REPOSITORY_URL: &str = "https://github.com/vipiny35/calendo";
+const REPOSITORY_URL: &str = "https://github.com/vipinsight/calendo";
 
 /// An update that will not verify is not a transient failure: this build's
 /// public key cannot attribute it to whoever signs releases, and no retry
