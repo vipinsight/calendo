@@ -196,6 +196,17 @@ pub(crate) const REMINDER_PRIVACY_URLS: &[&str] = &[
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders",
 ];
 
+/// Same ordering trap as above, and the pane id is not the one the docs give:
+/// it is `Date-Time`, not `Date-and-Time`. Read it off the extension bundle
+/// rather than trusting a writeup --
+/// `defaults read "/System/Library/ExtensionKit/Extensions/DateAndTime Extension.appex/Contents/Info.plist" CFBundleIdentifier`.
+/// The documented spelling stays as a fallback for systems that do use it.
+pub(crate) const DATE_TIME_SETTINGS_URLS: &[&str] = &[
+    "x-apple.systempreferences:com.apple.Date-Time-Settings.extension",
+    "x-apple.systempreferences:com.apple.Date-and-Time-Settings.extension",
+    "x-apple.systempreferences:com.apple.preference.datetime",
+];
+
 /// Hosts recognised as a joinable meeting. Keep in step with `meetings.ts`.
 const MEETING_HOSTS: &[&str] = &[
     "meet.google.com",
@@ -400,7 +411,7 @@ mod macos {
     use super::{
         access_action, access_granted, can_fetch_events, event_show_url, reminder_show_url,
         response_for, AccessAction, Response, UpcomingEvent, CALENDAR_PRIVACY_URLS,
-        REMINDER_PRIVACY_URLS,
+        DATE_TIME_SETTINGS_URLS, REMINDER_PRIVACY_URLS,
     };
     use block2::RcBlock;
     use objc2::rc::{autoreleasepool, Retained};
@@ -501,7 +512,7 @@ mod macos {
         app.activateIgnoringOtherApps(true);
     }
 
-    fn open_privacy_settings(urls: &[&str], label: &str) -> Result<(), String> {
+    fn open_settings_pane(urls: &[&str], label: &str) -> Result<(), String> {
         let workspace = NSWorkspace::sharedWorkspace();
         for url in urls {
             let Some(target) = NSURL::URLWithString(&NSString::from_str(url)) else {
@@ -511,15 +522,19 @@ mod macos {
                 return Ok(());
             }
         }
-        Err(format!("Could not open {label} privacy settings"))
+        Err(format!("Could not open {label} settings"))
     }
 
     pub(crate) fn open_calendar_privacy_settings() -> Result<(), String> {
-        open_privacy_settings(CALENDAR_PRIVACY_URLS, "Calendar")
+        open_settings_pane(CALENDAR_PRIVACY_URLS, "Calendar privacy")
     }
 
     pub(crate) fn open_reminder_privacy_settings() -> Result<(), String> {
-        open_privacy_settings(REMINDER_PRIVACY_URLS, "Reminders")
+        open_settings_pane(REMINDER_PRIVACY_URLS, "Reminders privacy")
+    }
+
+    pub(crate) fn open_date_time_settings() -> Result<(), String> {
+        open_settings_pane(DATE_TIME_SETTINGS_URLS, "Date & Time")
     }
 
     fn request_access(
@@ -1128,6 +1143,17 @@ pub fn open_reminders_privacy() -> Result<(), String> {
     #[cfg(not(target_os = "macos"))]
     {
         Err("Reminders privacy settings are only available on macOS".into())
+    }
+}
+
+pub fn open_date_time_settings() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::open_date_time_settings()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Date & Time settings are only available on macOS".into())
     }
 }
 
