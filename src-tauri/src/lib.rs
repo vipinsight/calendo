@@ -943,7 +943,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let date_time = MenuItem::with_id(
         app,
         "date-time",
-        "Date & Time Settings…",
+        // muda strips a lone `&` as a mnemonic marker, leaving "Date  Time".
+        "Date && Time Settings",
         true,
         None::<&str>,
     )?;
