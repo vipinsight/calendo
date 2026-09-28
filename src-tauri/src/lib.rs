@@ -280,8 +280,13 @@ const MENU_BAR_HIGHLIGHT_RADIUS: f64 = 11.0;
 /// reads `true` for as long as the window is open with nothing drawn. Control
 /// Center and OneDrive show the backdrop under plain panels, so the look is
 /// not menu-only; it just has to be drawn. We slip AppKit's own selection
-/// material behind the button's content, which keeps it right in both themes
-/// and over any wallpaper.
+/// material behind the button, which keeps it right in both themes and over
+/// any wallpaper.
+///
+/// Behind, not inside: the button draws its glyph and clock text itself, and
+/// any subview paints over that. macOS 26 renders the material opaque enough
+/// that a backdrop inside the button hid the icon, so it goes in the button's
+/// superview, ordered below the button.
 #[cfg(target_os = "macos")]
 fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
     use objc2::rc::Retained;
@@ -305,10 +310,13 @@ fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
         let Some(button) = item.button(mtm) else {
             return;
         };
+        let Some(host) = (unsafe { button.superview() }) else {
+            return;
+        };
 
-        // The view is its own marker: ours is the only effect view under this
-        // button, so clearing means dropping whatever we added last time.
-        let existing: Vec<Retained<NSVisualEffectView>> = button
+        // The view is its own marker: ours is the only effect view beside
+        // this button, so clearing means dropping whatever we added last time.
+        let existing: Vec<Retained<NSVisualEffectView>> = host
             .subviews()
             .iter()
             .filter_map(|view| view.downcast_ref::<NSVisualEffectView>().map(Retained::from))
@@ -320,13 +328,13 @@ fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
             return;
         }
 
-        let bounds = button.bounds();
+        let base = button.frame();
         let (over_x, over_y) = MENU_BAR_HIGHLIGHT_OVERHANG;
         let frame = NSRect::new(
-            NSPoint::new(bounds.origin.x - over_x, bounds.origin.y - over_y),
+            NSPoint::new(base.origin.x - over_x, base.origin.y - over_y),
             NSSize::new(
-                bounds.size.width + over_x * 2.0,
-                bounds.size.height + over_y * 2.0,
+                base.size.width + over_x * 2.0,
+                base.size.height + over_y * 2.0,
             ),
         );
         let backdrop = NSVisualEffectView::initWithFrame(mtm.alloc::<NSVisualEffectView>(), frame);
@@ -347,8 +355,8 @@ fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
             layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
             layer.setMasksToBounds(true);
         }
-        // Below the glyph, so the icon and any clock text stay on top.
-        button.addSubview_positioned_relativeTo(&backdrop, NSWindowOrderingMode::Below, None);
+        // Below the button, so the icon and any clock text stay on top.
+        host.addSubview_positioned_relativeTo(&backdrop, NSWindowOrderingMode::Below, Some(&button));
     });
 }
 

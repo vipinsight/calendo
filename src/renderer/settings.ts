@@ -370,6 +370,8 @@ function startSettings(api: DesktopApi): void {
       paintShortcut(field, field.dataset.chord ?? "");
     };
     field.addEventListener("click", () => {
+      // WebKit leaves a clicked button unfocused, so its keydown would never fire.
+      field.focus();
       field.dataset.recording = "true";
       field.classList.add("is-recording");
       field.textContent = "Press keys…";
