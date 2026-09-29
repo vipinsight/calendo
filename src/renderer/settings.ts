@@ -145,6 +145,9 @@ function startSettings(api: DesktopApi): void {
   const theme = requireElement<HTMLSelectElement>("theme");
   const version = requireElement<HTMLParagraphElement>("version");
   const checkUpdates = requireElement<HTMLButtonElement>("check-updates");
+  const updatePill = requireElement<HTMLButtonElement>("update-pill");
+  const updatePillTitle = requireElement<HTMLElement>("update-pill-title");
+  const updatePillAction = requireElement<HTMLElement>("update-pill-action");
   const openRepository = requireElement<HTMLButtonElement>("open-repository");
   const openProfile = requireElement<HTMLButtonElement>("open-profile");
   const openDonate = requireElement<HTMLButtonElement>("open-donate");
@@ -463,7 +466,7 @@ function startSettings(api: DesktopApi): void {
 
   tabs.addEventListener("keydown", (event) => {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    const buttons = Array.from(tabs.querySelectorAll<HTMLButtonElement>("button"));
+    const buttons = Array.from(tabs.querySelectorAll<HTMLButtonElement>("[role='tab']"));
     const current = buttons.findIndex((button) => button.getAttribute("aria-selected") === "true");
     const delta = event.key === "ArrowRight" ? 1 : -1;
     const next = buttons[(Math.max(current, 0) + delta + buttons.length) % buttons.length];
@@ -558,6 +561,9 @@ function startSettings(api: DesktopApi): void {
   });
 
   let updateAction: "check" | "install" = "check";
+  /** The version the host says is waiting; null when this build is current. */
+  let waiting: string | null = null;
+  let installing = false;
 
   const setUpdateButton = (
     label: string,
@@ -570,6 +576,53 @@ function startSettings(api: DesktopApi): void {
     updateAction = options?.install ? "install" : "check";
   };
 
+  /**
+   * The sidebar pill: hidden until an update is waiting, then the version and
+   * the one action, then how far installing has got.
+   */
+  const setUpdatePill = (
+    state: "available" | "working" | "error" | null,
+    action = "",
+    detail = "",
+  ): void => {
+    updatePill.hidden = state === null;
+    if (state === null) return;
+    updatePill.dataset.state = state;
+    updatePillTitle.textContent = waiting ? `Calendo ${waiting}` : "Calendo update";
+    updatePillAction.textContent = action;
+    updatePill.title = detail;
+    updatePill.disabled = state === "working";
+    updatePill.setAttribute("aria-label", `${updatePillTitle.textContent}. ${action}`);
+  };
+
+  const showWaiting = (version: string | null): void => {
+    waiting = version;
+    // An install already under way owns both controls until it ends.
+    if (installing) return;
+    if (!version) {
+      setUpdatePill(null);
+      return;
+    }
+    setUpdatePill("available", "Restart to update");
+    setUpdateButton(`Update to ${version} and Restart`, { install: true });
+  };
+
+  const showInstallFailure = (detail: string): void => {
+    installing = false;
+    setUpdateButton("Update failed", { install: true, detail });
+    setUpdatePill("error", "Try again", detail);
+  };
+
+  const install = (): void => {
+    installing = true;
+    setUpdateButton("Downloading…", { busy: true, install: true });
+    setUpdatePill("working", "Preparing…");
+    // The app relaunches itself when this finishes, so success needs no message.
+    void api.installUpdate().catch((error: unknown) => {
+      showInstallFailure(typeof error === "string" ? error : "Update failed");
+    });
+  };
+
   const checkForUpdates = async (installIfFound = false): Promise<void> => {
     setUpdateButton("Checking…", { busy: true });
     try {
@@ -579,14 +632,10 @@ function startSettings(api: DesktopApi): void {
         return;
       }
       if (installIfFound) {
-        setUpdateButton(`Installing ${offer.version}…`, { busy: true, install: true });
-        void api.installUpdate().catch((error: unknown) => {
-          const detail = typeof error === "string" ? error : "Update failed";
-          setUpdateButton("Update failed", { install: true, detail });
-        });
+        install();
         return;
       }
-      setUpdateButton(`Update to ${offer.version} and Restart`, { install: true });
+      showWaiting(offer.version);
     } catch (error) {
       const detail = typeof error === "string" ? error : "Could not reach update server";
       setUpdateButton("Could not check", { detail });
@@ -594,16 +643,15 @@ function startSettings(api: DesktopApi): void {
   };
   checkUpdates.addEventListener("click", () => {
     if (updateAction === "install") {
-      setUpdateButton("Downloading…", { busy: true, install: true });
-      // The app relaunches itself when this finishes, so success needs no message.
-      void api.installUpdate().catch((error: unknown) => {
-        const detail = typeof error === "string" ? error : "Update failed";
-        setUpdateButton("Update failed", { install: true, detail });
-      });
+      install();
       return;
     }
     void checkForUpdates(autoUpdate.checked);
   });
+  updatePill.addEventListener("click", install);
+  api.onUpdateAvailable(showWaiting);
+  api.onUpdateFailed(showInstallFailure);
+  void api.getUpdateAvailable().then(showWaiting);
 
   openRepository.addEventListener("click", () => void api.openRepository());
   openProfile.addEventListener("click", () => void api.openUrl("https://x.com/vip_iny"));
@@ -611,13 +659,16 @@ function startSettings(api: DesktopApi): void {
     void api.openUrl("https://buymeacoffee.com/vip_iny"),
   );
   openSite.addEventListener("click", () => void api.openUrl("https://vipinyadav.com"));
+  // Also arrives for an install started from the menu bar.
   api.onUpdateProgress(({ downloaded, total }) => {
-    setUpdateButton(
-      total
-        ? `Downloading… ${Math.min(100, Math.round((downloaded / total) * 100))}%`
-        : "Downloading…",
-      { busy: true, install: true },
-    );
+    installing = true;
+    const percent = total ? Math.min(100, Math.round((downloaded / total) * 100)) : null;
+    setUpdateButton(percent === null ? "Downloading…" : `Downloading… ${percent}%`, {
+      busy: true,
+      install: true,
+    });
+    // The pill is narrower than the button; one line, no ellipsis.
+    setUpdatePill("working", percent === null ? "Downloading" : `Downloading ${percent}%`);
   });
 
   void api.getSettings().then((settings) => {

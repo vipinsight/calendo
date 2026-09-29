@@ -63,6 +63,17 @@
         >
           About
         </button>
+        <!--
+          An update waiting, where the window is glanced at: the foot of the
+          sidebar. News rather than an alarm, with the action on it.
+        -->
+        <button type="button" class="update-pill" id="update-pill" hidden>
+          <span class="update-pill-dot" aria-hidden="true"></span>
+          <span class="update-pill-body">
+            <strong id="update-pill-title">Update available</strong>
+            <small id="update-pill-action">Restart to update</small>
+          </span>
+        </button>
       </div>
 
       <form id="form" autocomplete="off">
@@ -96,7 +107,7 @@
             <div class="row">
               <div class="copy">
                 <label for="auto-update">Install updates automatically</label>
-                <p>Download a signed release and restart when one is ready.</p>
+                <p>Off, Calendo only marks the menu bar icon when a release is ready.</p>
               </div>
               <input id="auto-update" name="autoUpdate" type="checkbox" switch />
             </div>

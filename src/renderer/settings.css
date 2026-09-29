@@ -715,3 +715,89 @@ input[type="checkbox"] {
     transition: none !important;
   }
 }
+
+/* An update waiting, at the foot of the sidebar: accent, not red, because
+   it is news. The whole pill is the button. */
+.tabs .update-pill {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  gap: 1px 7px;
+  align-items: center;
+  height: auto;
+  margin-top: auto;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--ink);
+  transition: border-color 140ms ease;
+}
+
+.tabs .update-pill[hidden] {
+  display: none;
+}
+
+.tabs .update-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.tabs .update-pill:disabled {
+  cursor: progress !important;
+}
+
+.update-pill-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.update-pill[data-state="working"] .update-pill-dot {
+  animation: update-pill-pulse 1.2s ease-in-out infinite;
+}
+
+/* The dot leads the title; the action runs the pill's full width below. */
+.update-pill-body {
+  display: contents;
+}
+
+.update-pill-body strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Wraps rather than truncating: the action is the part that must be read. */
+.update-pill-body small {
+  grid-column: 1 / -1;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.update-pill[data-state="error"] .update-pill-body small {
+  color: var(--ink-soft);
+}
+
+.tabs .update-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@keyframes update-pill-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-pill[data-state="working"] .update-pill-dot {
+    animation: none;
+  }
+}
