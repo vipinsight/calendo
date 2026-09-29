@@ -7,6 +7,7 @@ mod beep;
 mod events;
 mod glass;
 mod settings;
+mod updates;
 
 use serde::Serialize;
 use settings::{AppSettings, SettingsStore};
@@ -23,7 +24,6 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
-use tauri_plugin_updater::UpdaterExt;
 
 const CALENDAR_LABEL: &str = "calendar";
 const EVENTS_LABEL: &str = "events";
@@ -84,6 +84,8 @@ const TRAY_FILLED: [&[u8]; 31] = [
 ];
 
 const TRAY_CALENDAR: &[u8] = include_bytes!("../../icons/tray/calendar.png");
+const TRAY_ICON: &[u8] = include_bytes!("../../icons/tray-icon.png");
+const UPDATE_MENU_ID: &str = "install-update";
 
 struct AppState {
     settings: Mutex<SettingsStore>,
@@ -108,6 +110,18 @@ struct AppState {
     shortcuts: Mutex<RegisteredShortcuts>,
     /// One rebinding at a time, so two quick edits cannot interleave.
     shortcut_rebind: Mutex<()>,
+    /// The calendar status item's glyph before any update dot, so the dot can
+    /// come and go without the renderer repainting. None is text only.
+    tray_glyph: Mutex<Option<Vec<u8>>>,
+}
+
+/// "Update to X and Restart", kept so it can be put at the top of the
+/// status item menu and taken off again. The menu is edited in place because
+/// the NSMenu a right click pops up is the one taken off the item at launch.
+struct UpdateMenu {
+    menu: Menu<tauri::Wry>,
+    item: MenuItem<tauri::Wry>,
+    separator: PredefinedMenuItem<tauri::Wry>,
 }
 
 /// What each system-wide chord does when it fires.
@@ -934,6 +948,7 @@ fn handle_menu_action(app: &AppHandle, id: &str) {
             let _ = events::open_date_time_settings();
         }
         "quit" => app.exit(0),
+        UPDATE_MENU_ID => install_update_from_menu(app),
         _ => {}
     }
 }
@@ -962,8 +977,19 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let icon = tauri::image::Image::from_bytes(include_bytes!("../../icons/tray-icon.png"))?;
+    let icon = tauri::image::Image::from_bytes(TRAY_ICON)?;
     let menu = build_tray_menu(app)?;
+    app.manage(UpdateMenu {
+        menu: menu.clone(),
+        item: MenuItem::with_id(
+            app,
+            UPDATE_MENU_ID,
+            "Update and Restart",
+            true,
+            None::<&str>,
+        )?,
+        separator: PredefinedMenuItem::separator(app)?,
+    });
     #[cfg(target_os = "macos")]
     let status_menu: TrayMenuShare = Arc::new(Mutex::new(None));
     let calendar = TrayIconBuilder::with_id(TRAY_ID)
@@ -1122,37 +1148,6 @@ fn spawn_clock(app: AppHandle) {
     });
 }
 
-/// First look is delayed so launch is not racing the updater. Later looks
-/// are hours apart; GitHub does not need a check on every clock tick.
-const AUTO_UPDATE_FIRST_WAIT: Duration = Duration::from_secs(20);
-const AUTO_UPDATE_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
-
-fn auto_update_enabled(app: &AppHandle) -> bool {
-    app.state::<AppState>()
-        .settings
-        .lock()
-        .map(|store| store.value().auto_update)
-        .unwrap_or(false)
-}
-
-/// Release builds only. A debug `pnpm app` bundle must not replace itself
-/// with the GitHub payload.
-fn spawn_auto_update(app: AppHandle) {
-    if cfg!(debug_assertions) {
-        return;
-    }
-    std::thread::spawn(move || {
-        std::thread::sleep(AUTO_UPDATE_FIRST_WAIT);
-        loop {
-            if auto_update_enabled(&app) {
-                let handle = app.clone();
-                let _ = tauri::async_runtime::block_on(apply_available_update(&handle));
-            }
-            std::thread::sleep(AUTO_UPDATE_EVERY);
-        }
-    });
-}
-
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
     state
@@ -1198,7 +1193,7 @@ fn update_settings(
     if saved.auto_update && !previous.auto_update && !cfg!(debug_assertions) {
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = apply_available_update(&handle).await;
+            let _ = updates::install(&handle).await;
         });
     }
     let _ = app.emit("settings-changed", &saved);
@@ -1235,14 +1230,127 @@ fn set_tray_label(
                 .filter(|day| (1..=31).contains(day))
                 .and_then(|day| TRAY_FILLED.get(usize::from(day) - 1).copied()),
         };
-        let glyph = bytes.and_then(|data| tauri::image::Image::from_bytes(data).ok());
-        let showing = glyph.is_some();
-        let _ = tray.set_icon(glyph);
-        if showing {
-            let _ = tray.set_icon_as_template(true);
+        if let Ok(mut glyph) = app.state::<AppState>().tray_glyph.lock() {
+            *glyph = bytes.map(<[u8]>::to_vec);
         }
-        #[cfg(target_os = "macos")]
-        align_status_item_content(&tray);
+        paint_tray_glyph(&tray, bytes);
+    });
+}
+
+/// Radius of the update dot and the clear ring around it, as shares of the
+/// glyph's height. On the 18pt status item that is a 5pt dot with a 1.25pt
+/// gap: news, the size other menu bar apps use, not an alarm.
+const UPDATE_DOT_RADIUS: f32 = 5.0 / 36.0;
+const UPDATE_DOT_GAP: f32 = 2.5 / 36.0;
+
+/// Puts the update dot in the top-right corner of a template glyph, cut out
+/// of whatever it lands on so it reads against a filled badge as well as
+/// against bare strokes. Only alpha matters to a template image; macOS draws
+/// the dot in the menu bar's own ink.
+fn with_update_dot(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let radius = height as f32 * UPDATE_DOT_RADIUS;
+    let clear = radius + height as f32 * UPDATE_DOT_GAP;
+    let (cx, cy) = (width as f32 - radius, radius);
+    let mut out = rgba.to_vec();
+    for y in 0..height {
+        for x in 0..width {
+            let distance = (x as f32 + 0.5 - cx).hypot(y as f32 + 0.5 - cy);
+            let keep = (distance - clear + 0.5).clamp(0.0, 1.0);
+            let dot = (radius + 0.5 - distance).clamp(0.0, 1.0);
+            let pixel = &mut out[((y * width + x) * 4) as usize..][..4];
+            let alpha = (f32::from(pixel[3]) * keep).max(dot * 255.0);
+            if dot > 0.0 {
+                pixel[..3].fill(0);
+            }
+            pixel[3] = alpha.round() as u8;
+        }
+    }
+    out
+}
+
+/// Writes the calendar status item's glyph, dotted while an update waits.
+/// A text-only style has no glyph to mark, so the dot stands by itself
+/// ahead of the text.
+fn paint_tray_glyph(tray: &tauri::tray::TrayIcon, base: Option<&[u8]>) {
+    let base = base.and_then(|data| tauri::image::Image::from_bytes(data).ok());
+    let glyph = match (base, updates::available().is_some()) {
+        (Some(image), false) => Some(image),
+        (Some(image), true) => {
+            let (width, height) = (image.width(), image.height());
+            Some(tauri::image::Image::new_owned(
+                with_update_dot(image.rgba(), width, height),
+                width,
+                height,
+            ))
+        }
+        (None, true) => {
+            let height = 36;
+            let width = (height as f32 * UPDATE_DOT_RADIUS * 2.0).ceil() as u32 + 2;
+            let blank = vec![0; (width * height * 4) as usize];
+            Some(tauri::image::Image::new_owned(
+                with_update_dot(&blank, width, height),
+                width,
+                height,
+            ))
+        }
+        (None, false) => None,
+    };
+    let showing = glyph.is_some();
+    let _ = tray.set_icon(glyph);
+    if showing {
+        let _ = tray.set_icon_as_template(true);
+    }
+    #[cfg(target_os = "macos")]
+    align_status_item_content(tray);
+}
+
+/// Follows a check's verdict into the menu bar: the dot on the glyph, and the
+/// install item at the top of the menu. `None` takes both away.
+fn show_update_available(app: &AppHandle, version: Option<&str>) {
+    if let Some(update) = app.try_state::<UpdateMenu>() {
+        let shown = update.menu.get(UPDATE_MENU_ID).is_some();
+        match version {
+            Some(version) => {
+                let _ = update
+                    .item
+                    .set_text(format!("Update to {version} and Restart"));
+                if !shown {
+                    let _ = update
+                        .menu
+                        .prepend_items(&[&update.item, &update.separator]);
+                }
+            }
+            None if shown => {
+                let _ = update.menu.remove(&update.item);
+                let _ = update.menu.remove(&update.separator);
+            }
+            None => {}
+        }
+    }
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(tray) = app.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        let base = app
+            .state::<AppState>()
+            .tray_glyph
+            .lock()
+            .ok()
+            .and_then(|glyph| glyph.clone());
+        paint_tray_glyph(&tray, base.as_deref());
+    });
+}
+
+/// "Update and Restart" from the menu. Progress shows on the Settings pill if
+/// the window is open; a failure brings it forward so the reason can be read.
+fn install_update_from_menu(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(message) = updates::install(&app).await {
+            let _ = app.emit("update-failed", message);
+            present_settings(&app);
+        }
     });
 }
 
@@ -1551,81 +1659,38 @@ struct UpdateOffer {
     notes: String,
 }
 
-/// Asks the updater endpoint, which serves the manifest a release publishes.
-/// The plugin verifies the manifest's signature against the public key built
-/// into the app, so an unsigned or tampered update is refused here.
+/// Asks now, whatever the setting says: pressing the button is the asking.
 #[tauri::command]
 async fn check_for_updates(app: AppHandle) -> Result<UpdateOffer, String> {
-    let updater = app.updater().map_err(|error| error.to_string())?;
-    match updater.check().await {
-        Ok(Some(update)) => Ok(UpdateOffer {
-            version: update.version.clone(),
-            notes: update.body.clone().unwrap_or_default(),
-        }),
-        Ok(None) => Ok(UpdateOffer {
-            version: String::new(),
-            notes: String::new(),
-        }),
-        Err(error) => Err(error.to_string()),
-    }
+    let found = updates::check(&app).await?;
+    Ok(UpdateOffer {
+        version: found
+            .as_ref()
+            .map(|update| update.version.clone())
+            .unwrap_or_default(),
+        notes: found.and_then(|update| update.body).unwrap_or_default(),
+    })
+}
+
+/// The version a background check found and nobody has installed yet, for a
+/// Settings window that opened after the event saying so.
+#[tauri::command]
+fn update_available() -> Option<String> {
+    updates::available()
 }
 
 /// Shown on the About pane, and the way out when an update cannot be applied
 /// and the only route left is a hand-installed disk image.
 const REPOSITORY_URL: &str = "https://github.com/vipinsight/calendo";
 
-/// An update that will not verify is not a transient failure: this build's
-/// public key cannot attribute it to whoever signs releases, and no retry
-/// changes that. Say so plainly and point at the disk image.
-fn install_failure(error: tauri_plugin_updater::Error) -> String {
-    if matches!(error, tauri_plugin_updater::Error::Minisign(_)) {
-        return "This update couldn't be verified — download the latest version from GitHub".into();
-    }
-    error.to_string()
-}
-
 #[tauri::command]
 fn open_repository() -> Result<(), String> {
     events::open_meeting(REPOSITORY_URL)
 }
 
-/// Downloads the update, replaces the app bundle, and relaunches. Progress
-/// goes out as `update-progress` events carrying bytes downloaded of the
-/// total, so the window can show something while it works.
-///
-/// Returns `Ok(false)` when the running build is already current.
-async fn apply_available_update(app: &AppHandle) -> Result<bool, String> {
-    let updater = app.updater().map_err(|error| error.to_string())?;
-    let Some(update) = updater.check().await.map_err(|error| error.to_string())? else {
-        return Ok(false);
-    };
-
-    let progress = app.clone();
-    let mut downloaded = 0usize;
-    update
-        .download_and_install(
-            move |chunk, total| {
-                downloaded += chunk;
-                let _ = progress.emit(
-                    "update-progress",
-                    serde_json::json!({
-                        "downloaded": downloaded,
-                        "total": total,
-                    }),
-                );
-            },
-            || {},
-        )
-        .await
-        .map_err(install_failure)?;
-
-    // The bundle on disk is the new one now; nothing here survives the swap.
-    app.restart();
-}
-
 #[tauri::command]
 async fn install_update(app: AppHandle) -> Result<(), String> {
-    if apply_available_update(&app).await? {
+    if updates::install(&app).await? {
         Ok(())
     } else {
         Err("Calendo is already up to date".into())
@@ -1676,6 +1741,7 @@ pub fn run() {
                 dismissed_events: Mutex::new(Vec::new()),
                 shortcuts: Mutex::new(RegisteredShortcuts::default()),
                 shortcut_rebind: Mutex::new(()),
+                tray_glyph: Mutex::new(Some(TRAY_ICON.to_vec())),
             });
             set_launch_at_login(app.handle(), initial.launch_at_login);
             build_calendar_window(app.handle())?;
@@ -1685,7 +1751,7 @@ pub fn run() {
             build_tray(app.handle())?;
             apply_shortcuts(app.handle(), &initial);
             spawn_clock(app.handle().clone());
-            spawn_auto_update(app.handle().clone());
+            updates::spawn_checks(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1702,6 +1768,7 @@ pub fn run() {
             open_settings,
             app_version,
             check_for_updates,
+            update_available,
             install_update,
             open_repository,
             get_upcoming_event,
@@ -1743,6 +1810,36 @@ mod tests {
                 "window {label} is missing from capabilities/default.json"
             );
         }
+    }
+
+    fn alpha_at(rgba: &[u8], width: u32, x: u32, y: u32) -> u8 {
+        rgba[((y * width + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn update_dot_sits_in_the_top_right_cut_out_of_the_glyph() {
+        // A fully inked 36px badge, like the filled day glyphs.
+        let (width, height) = (40, 36);
+        let badge = vec![255; (width * height * 4) as usize];
+        let dotted = with_update_dot(&badge, width, height);
+        // The dot's centre is inked, and in black.
+        let (cx, cy) = (width - 5, 5);
+        assert_eq!(alpha_at(&dotted, width, cx, cy), 255);
+        assert_eq!(dotted[((cy * width + cx) * 4) as usize], 0);
+        // The ring around it is cleared so the dot reads against the fill.
+        assert_eq!(alpha_at(&dotted, width, cx - 6, cy), 0);
+        // The rest of the glyph is untouched.
+        assert_eq!(alpha_at(&dotted, width, 4, height - 4), 255);
+        assert_eq!(dotted.len(), badge.len());
+    }
+
+    #[test]
+    fn update_dot_inks_an_empty_glyph_only_where_the_dot_is() {
+        let (width, height) = (12, 36);
+        let blank = vec![0; (width * height * 4) as usize];
+        let dotted = with_update_dot(&blank, width, height);
+        assert_eq!(alpha_at(&dotted, width, width - 5, 5), 255);
+        assert_eq!(alpha_at(&dotted, width, width - 5, height - 5), 0);
     }
 
     #[test]

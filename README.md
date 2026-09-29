@@ -36,7 +36,8 @@ Download the disk image from
 Calendo to Applications.
 
 Installed copies can update themselves from Settings → About. Automatic
-updates are on by default.
+updates are on by default; switched off, Calendo still checks and puts a dot on
+its menu bar icon when a release is ready.
 
 To build from source:
 
