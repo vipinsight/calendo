@@ -160,7 +160,11 @@ export function eventQualifiesForIcon(
   return eventInIconLead(event, now, leadMinutes);
 }
 
-/** The include filters decide the candidates; the lead decides when to show. */
+/**
+ * The include filters decide the candidates; the lead decides when to show.
+ * All-day items never count down, whatever the filters say: a birthday would
+ * hold the icon at "now" all day. They stay in the popover list instead.
+ */
 export function trayIconEvent(
   events: readonly UpcomingEvent[],
   now: number,
@@ -173,6 +177,7 @@ export function trayIconEvent(
 ): UpcomingEvent | null {
   const dismissed = options.dismissed ?? [];
   for (const event of events) {
+    if (event.allDay) continue;
     if (!eventPassesFilters(event, options.filters)) continue;
     if (occurrenceIsDismissed(event, dismissed, now)) continue;
     if (
