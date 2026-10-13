@@ -17,6 +17,16 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 const FIRST_CHECK_AFTER: Duration = Duration::from_secs(20);
 const BETWEEN_CHECKS: Duration = Duration::from_secs(12 * 60 * 60);
 
+/// How long to wait for a connection to the update host, split evenly across
+/// the addresses it resolves to.
+///
+/// GitHub serves release files from a host with several addresses, and a
+/// network may not reach all of them. With no limit the client waits out
+/// macOS's own ~75s connect timeout on a dead address before trying the next,
+/// so a check sat on "Checking…" for over a minute. Split four ways this
+/// gives each address 2s, which a reachable one needs a small part of.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// The newer version the last check found, if any.
 ///
 /// Kept here so the menu bar and a Settings window opened later can both say
@@ -91,8 +101,15 @@ async fn check_then_maybe_install(app: &AppHandle) -> Result<(), String> {
 /// `None` means the running build is current. A failed check leaves whatever
 /// was found before in place: being unable to ask is not the same as there
 /// being nothing to find.
+///
+/// The returned update downloads with the same client settings, so the
+/// connect limit covers the install too.
 pub async fn check(app: &AppHandle) -> Result<Option<Update>, String> {
-    let updater = app.updater().map_err(|error| error.to_string())?;
+    let updater = app
+        .updater_builder()
+        .configure_client(|client| client.connect_timeout(CONNECT_TIMEOUT))
+        .build()
+        .map_err(|error| error.to_string())?;
     let found = updater.check().await.map_err(|error| error.to_string())?;
     set_available(app, found.as_ref().map(|update| update.version.clone()));
     Ok(found)
