@@ -1151,12 +1151,70 @@ fn build_settings_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Lands a tick just past each wall-clock minute, so a countdown turns over
+/// with the clock instead of up to half a minute late.
+///
+/// The wait is measured on a clock that stops while the Mac sleeps, so a wait
+/// begun before sleep ends at some arbitrary time after wake. Waking therefore
+/// nudges the loop: it ticks at once and re-aligns to the next minute.
 fn spawn_clock(app: AppHandle) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        let _ = app.emit("clock-tick", ());
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let (nudge, nudges) = channel::<()>();
+    watch_for_wake(nudge.clone());
+    std::thread::spawn(move || {
+        // Held so the channel never disconnects, even without a wake watcher.
+        let _nudge = nudge;
+        loop {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            if let Err(RecvTimeoutError::Disconnected) = nudges.recv_timeout(until_next_minute(now))
+            {
+                return;
+            }
+            let _ = app.emit("clock-tick", ());
+        }
     });
 }
+
+/// How long to wait from `now` (time since the epoch) until just past the next
+/// minute. The slack keeps a timer that fires a hair early from ticking at
+/// :59.99 and painting the minute that is ending.
+fn until_next_minute(now: Duration) -> Duration {
+    const MINUTE_MS: u128 = 60_000;
+    const SLACK: Duration = Duration::from_millis(50);
+    let into_minute = now.as_millis() % MINUTE_MS;
+    Duration::from_millis((MINUTE_MS - into_minute) as u64) + SLACK
+}
+
+/// Sends on `nudge` each time the Mac wakes from sleep.
+#[cfg(target_os = "macos")]
+fn watch_for_wake(nudge: std::sync::mpsc::Sender<()>) {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification};
+    use objc2_foundation::NSNotification;
+    use std::ptr::NonNull;
+
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        let _ = nudge.send(());
+    });
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWorkspaceDidWakeNotification),
+            None,
+            None,
+            &block,
+        )
+    };
+    // The watch lasts as long as the app; nothing ever removes it.
+    std::mem::forget(observer);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn watch_for_wake(_nudge: std::sync::mpsc::Sender<()>) {}
 
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
@@ -1802,6 +1860,26 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clock_waits_until_just_past_the_next_minute() {
+        let slack = Duration::from_millis(50);
+        // 12:00:00.000 exactly: a whole minute, not zero, so it never spins.
+        assert_eq!(
+            until_next_minute(Duration::from_secs(1_800_000_000)),
+            Duration::from_secs(60) + slack
+        );
+        // 12:00:59.990: lands on 12:01, not a tick that repaints 12:00.
+        assert_eq!(
+            until_next_minute(Duration::from_millis(1_800_000_059_990)),
+            Duration::from_millis(10) + slack
+        );
+        // 12:00:17.250
+        assert_eq!(
+            until_next_minute(Duration::from_millis(1_800_000_017_250)),
+            Duration::from_millis(42_750) + slack
+        );
+    }
 
     /// A window missing from the capability cannot listen for events, and
     /// nothing fails loudly: its own commands keep working while every
