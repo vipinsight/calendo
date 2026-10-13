@@ -30,3 +30,11 @@ objc2-app-kit = { version = "0.3.2", features = ["NSBox", "NSButton", "NSButtonC
 objc2-quartz-core = { version = "0.3.2", features = ["CALayer"] }
 objc2-foundation = "0.3.2"
 block2 = "0.6"
+
+# The macOS 27 toolchain's `strip` corrupts proc-macro dylibs when the
+# deployment target is 13.0, which `tauri build` sets: dyld rejects them with
+# "mis-aligned LINKEDIT string pool" and rustc reports "can't find crate for
+# serde_derive". Proc-macros only run at compile time and never ship, so they
+# skip stripping; the app binary is still stripped.
+[profile.release.build-override]
+strip = "none"
