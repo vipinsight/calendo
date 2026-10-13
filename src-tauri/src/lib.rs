@@ -284,6 +284,10 @@ const MENU_BAR_HIGHLIGHT_OVERHANG: (f64, f64) = (0.0, 1.0);
 /// The continuous corner that goes with it.
 #[cfg(target_os = "macos")]
 const MENU_BAR_HIGHLIGHT_RADIUS: f64 = 11.0;
+/// How strongly the backdrop tints the menu bar: the label color at this
+/// alpha, so ~white 15% over a dark bar and ~black 15% over a light one.
+#[cfg(target_os = "macos")]
+const MENU_BAR_HIGHLIGHT_ALPHA: f64 = 0.15;
 
 /// Paints the "this popover is open" backdrop behind a status item.
 ///
@@ -293,20 +297,24 @@ const MENU_BAR_HIGHLIGHT_RADIUS: f64 = 11.0;
 /// `mouseUp:` anyway. Setting `isHighlighted` back afterwards is inert -- it
 /// reads `true` for as long as the window is open with nothing drawn. Control
 /// Center and OneDrive show the backdrop under plain panels, so the look is
-/// not menu-only; it just has to be drawn. We slip AppKit's own selection
-/// material behind the button, which keeps it right in both themes and over
-/// any wallpaper.
+/// not menu-only; it just has to be drawn.
+///
+/// A plain translucent fill, not a material. The selection material looked
+/// right on macOS 27, where it composites as a light wash, but macOS 26
+/// renders it as the solid unemphasized-selection gray: first a gray blob
+/// over the icon, then a dark gray slab behind it. The fill is the label
+/// color at a low alpha, which is dynamic, so the box redraws white-ish over a
+/// dark menu bar and black-ish over a light one without our involvement.
 ///
 /// Behind, not inside: the button draws its glyph and clock text itself, and
-/// any subview paints over that. macOS 26 renders the material opaque enough
-/// that a backdrop inside the button hid the icon, so it goes in the button's
-/// superview, ordered below the button.
+/// any subview paints over that, so the fill goes in the button's superview,
+/// ordered below the button.
 #[cfg(target_os = "macos")]
 fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
     use objc2::rc::Retained;
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-        NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
+        NSAutoresizingMaskOptions, NSBox, NSBoxType, NSColor, NSTitlePosition,
+        NSWindowOrderingMode,
     };
     use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
     use objc2_quartz_core::kCACornerCurveContinuous;
@@ -328,12 +336,12 @@ fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
             return;
         };
 
-        // The view is its own marker: ours is the only effect view beside
-        // this button, so clearing means dropping whatever we added last time.
-        let existing: Vec<Retained<NSVisualEffectView>> = host
+        // The view is its own marker: ours is the only box beside this
+        // button, so clearing means dropping whatever we added last time.
+        let existing: Vec<Retained<NSBox>> = host
             .subviews()
             .iter()
-            .filter_map(|view| view.downcast_ref::<NSVisualEffectView>().map(Retained::from))
+            .filter_map(|view| view.downcast_ref::<NSBox>().map(Retained::from))
             .collect();
         for view in existing {
             view.removeFromSuperview();
@@ -351,11 +359,13 @@ fn paint_status_item_highlight(app: &AppHandle, id: &str, highlighted: bool) {
                 base.size.height + over_y * 2.0,
             ),
         );
-        let backdrop = NSVisualEffectView::initWithFrame(mtm.alloc::<NSVisualEffectView>(), frame);
-        backdrop.setMaterial(NSVisualEffectMaterial::Selection);
-        backdrop.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        backdrop.setState(NSVisualEffectState::Active);
-        backdrop.setEmphasized(false);
+        let backdrop = NSBox::initWithFrame(mtm.alloc::<NSBox>(), frame);
+        backdrop.setBoxType(NSBoxType::Custom);
+        backdrop.setTitlePosition(NSTitlePosition::NoTitle);
+        backdrop.setBorderWidth(0.0);
+        backdrop.setCornerRadius(0.0);
+        backdrop.setContentViewMargins(NSSize::new(0.0, 0.0));
+        backdrop.setFillColor(&NSColor::labelColor().colorWithAlphaComponent(MENU_BAR_HIGHLIGHT_ALPHA));
         // Follow the item's width; the vertical overhang is fixed, so the
         // margins float rather than letting the height snap back to bounds.
         backdrop.setAutoresizingMask(
