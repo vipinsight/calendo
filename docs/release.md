@@ -48,6 +48,14 @@ Then the script:
 
 When it finishes it prints the three files to upload.
 
+If the build stops with `can't find crate for serde_derive` (or another
+`*_derive` / `*_macros` crate) and `mis-aligned LINKEDIT string pool`, a proc
+macro was stripped. The macOS 27 toolchain's `strip` breaks them at the 13.0
+deployment target, and `[profile.release.build-override]` in `Cargo.toml`
+turns stripping off for them. Cargo does not key its cache on the deployment
+target, so a broken copy can linger in `src-tauri/target/release`. Clear it
+with `cargo clean --release --manifest-path src-tauri/Cargo.toml`.
+
 ## 3. Publish on GitHub
 
 Use the paths the script printed:
