@@ -307,7 +307,7 @@ describe("events icon lead", () => {
     expect(eventQualifiesForIcon(tomorrow, local, 2, ICON_LEAD_ALWAYS)).toBe(true);
   });
 
-  it("counts all-day reminders on the icon like timed events", () => {
+  it("never counts an all-day item down, even when all-day items are included", () => {
     const reminder = {
       ...event,
       kind: "reminder" as const,
@@ -315,15 +315,17 @@ describe("events icon lead", () => {
       startAt: Date.UTC(2026, 8, 9, 0, 0),
       endAt: Date.UTC(2026, 8, 9, 23, 0),
     };
-    expect(eventQualifiesForIcon(reminder, now, 1, ICON_LEAD_ALWAYS)).toBe(true);
-    expect(eventQualifiesForIcon(reminder, Date.UTC(2026, 8, 8, 10, 0), 1, 15)).toBe(false);
-    expect(
-      trayIconEvent([reminder, event], now, {
-        upcomingHorizonDays: 1,
-        upcomingIconLeadMinutes: ICON_LEAD_ALWAYS,
-        filters: included,
-      }),
-    ).toBe(reminder);
+    const options = {
+      upcomingHorizonDays: 1,
+      upcomingIconLeadMinutes: ICON_LEAD_ALWAYS,
+      filters: included,
+    };
+    expect(trayIconEvent([reminder, event], now, options)).toBe(event);
+    expect(trayIconEvent([reminder], now, options)).toBeNull();
+    expect(visibleUpcomingEvents([reminder, event], now, 1, included)).toEqual([
+      reminder,
+      event,
+    ]);
   });
 
   it("counts down the next qualifying event after one is dismissed", () => {

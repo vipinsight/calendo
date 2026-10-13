@@ -81,7 +81,7 @@ impl Default for AppSettings {
             upcoming_horizon_days: 1,
             upcoming_horizon_hours: 0,
             upcoming_icon_lead_minutes: 0,
-            include_all_day_events: false,
+            include_all_day_events: true,
             include_events_without_participants: true,
             include_events_without_location: true,
             show_event_title_in_menu_bar: false,
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn defaults_the_include_filters_and_the_menu_bar_preview() {
         let settings = AppSettings::default();
-        assert!(!settings.include_all_day_events);
+        assert!(settings.include_all_day_events);
         assert!(settings.include_events_without_participants);
         assert!(settings.include_events_without_location);
         assert!(!settings.show_event_title_in_menu_bar);

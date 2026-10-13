@@ -23,7 +23,7 @@ it("replaces startup permission failure when opened after granting access", asyn
   api.getSettings.mockResolvedValue({
     upcomingHorizonDays: 1,
     upcomingIconLeadMinutes: 0,
-    includeAllDayEvents: false,
+    includeAllDayEvents: true,
     includeEventsWithoutParticipants: true,
     includeEventsWithoutLocation: true,
   });

@@ -149,7 +149,7 @@ describe("normalizeSettings", () => {
 
   it("shows every event and keeps the menu bar glyph-only by default", () => {
     const settings = normalizeSettings({});
-    expect(settings.includeAllDayEvents).toBe(false);
+    expect(settings.includeAllDayEvents).toBe(true);
     expect(settings.includeEventsWithoutParticipants).toBe(true);
     expect(settings.includeEventsWithoutLocation).toBe(true);
     expect(settings.showEventTitleInMenuBar).toBe(false);

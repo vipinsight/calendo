@@ -165,7 +165,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showUpcomingEvent: false,
   upcomingHorizonDays: 1,
   upcomingIconLeadMinutes: ICON_LEAD_ALWAYS,
-  includeAllDayEvents: false,
+  includeAllDayEvents: true,
   includeEventsWithoutParticipants: true,
   includeEventsWithoutLocation: true,
   showEventTitleInMenuBar: false,
