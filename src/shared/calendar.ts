@@ -155,3 +155,12 @@ export function dayName(date: Date, locale?: string): string {
     year: "numeric",
   }).format(date);
 }
+
+/**
+ * Whether a clock tick at `now` should sound the hourly beep, given the hour
+ * of the previous tick. Ticks also fire on wake from sleep, so an hour change
+ * alone is not enough: the tick must land in the :00 minute.
+ */
+export function isHourlyBeepTick(now: Date, lastHour: number): boolean {
+  return now.getHours() !== lastHour && now.getMinutes() === 0;
+}
