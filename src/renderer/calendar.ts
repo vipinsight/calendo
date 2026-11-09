@@ -4,6 +4,7 @@ import {
   buildMonth,
   dayName,
   fromIso,
+  isHourlyBeepTick,
   toIso,
   type CalendarMonth,
 } from "../shared/calendar";
@@ -549,11 +550,10 @@ function startCalendar(api: DesktopApi): void {
   void markPopoverMaterial(() => api.getPopoverMaterial());
   api.onSettingsChanged(applySettings);
   api.onClockTick(() => {
-    const hour = new Date().getHours();
-    if (hour !== lastHour) {
-      lastHour = hour;
-      if (settings?.beepOnTheHour) void api.beep();
-    }
+    const now = new Date();
+    // Wake from sleep also ticks; an hour change at 11:17 is not "on the hour".
+    if (settings?.beepOnTheHour && isHourlyBeepTick(now, lastHour)) void api.beep();
+    lastHour = now.getHours();
     refreshTray();
     render();
     void refreshUpcoming();

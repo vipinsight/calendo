@@ -3,6 +3,7 @@ import {
   addMonths,
   atNoon,
   buildMonth,
+  isHourlyBeepTick,
   isoWeekNumber,
   toIso,
   weekdayIndex,
@@ -79,5 +80,19 @@ describe("date helpers", () => {
   it("uses ISO week numbers", () => {
     expect(isoWeekNumber(atNoon(2026, 0, 1))).toBe(1);
     expect(isoWeekNumber(atNoon(2026, 8, 8))).toBe(37);
+  });
+});
+
+describe("hourly beep", () => {
+  it("beeps when the tick lands on the hour", () => {
+    expect(isHourlyBeepTick(new Date(2026, 10, 9, 11, 0, 1), 10)).toBe(true);
+  });
+
+  it("stays quiet when waking from sleep mid-hour into a new hour", () => {
+    expect(isHourlyBeepTick(new Date(2026, 10, 9, 11, 17, 1), 9)).toBe(false);
+  });
+
+  it("does not beep twice within the same hour", () => {
+    expect(isHourlyBeepTick(new Date(2026, 10, 9, 11, 0, 31), 11)).toBe(false);
   });
 });
