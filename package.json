@@ -8,6 +8,7 @@
   "scripts": {
     "app": "tauri build --debug --bundles app --config src-tauri/tauri.dev.conf.json && open src-tauri/target/debug/bundle/macos/Calendo.app",
     "build": "pnpm typecheck && node scripts/copy-static.mjs",
+    "clean": "cargo clean --manifest-path src-tauri/Cargo.toml && rm -rf dist",
     "dev": "pnpm build && tauri dev",
     "dmg": "node scripts/release-dmg.mjs",
     "dmg:background": "swift scripts/generate-dmg-background.swift && tiffutil -cathidpicheck icons/dmg/background.png icons/dmg/background@2x.png -out icons/dmg/background.tiff && rm icons/dmg/background.png icons/dmg/background@2x.png",

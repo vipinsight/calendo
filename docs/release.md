@@ -46,7 +46,9 @@ Then the script:
 4. Writes `latest.json` next to the DMG, pointing at this version’s GitHub
    download URL.
 
-When it finishes it prints the three files to upload.
+It deletes the previous release's `bundle/dmg` and `bundle/macos` first, so
+the three files it prints at the end are always from this build. If
+`src-tauri/target` has grown past 5 GB it also suggests `pnpm clean`.
 
 If the build stops with `can't find crate for serde_derive` (or another
 `*_derive` / `*_macros` crate) and `mis-aligned LINKEDIT string pool`, a proc
@@ -76,6 +78,21 @@ All three have to go up together:
 
 Without `latest.json`, Settings → About finds no update. Without the tar.gz,
 it finds one and then fails to download.
+
+## 4. Reclaim disk space
+
+Cargo never deletes old builds. Every toolchain update, dependency bump and
+switch between `pnpm test`, `pnpm app` and `pnpm dmg` adds another compiled
+copy of every dependency, and `src-tauri/target` grows into gigabytes. Once the
+release is uploaded:
+
+```bash
+pnpm clean
+```
+
+This runs `cargo clean`, which also deletes the release bundles, and removes
+`dist/`, so upload first. The next build recompiles from scratch, which takes a few
+minutes.
 
 ## The signing key
 

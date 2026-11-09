@@ -10,7 +10,7 @@
  * APPLE_SIGNING_IDENTITY. CI can pass them as environment variables instead.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { payloadUrl, updaterManifest } from "./updater-manifest.mjs";
@@ -18,6 +18,10 @@ import { payloadUrl, updaterManifest } from "./updater-manifest.mjs";
 const ENV_FILE = ".env.notarization";
 const DMG_DIR = "src-tauri/target/release/bundle/dmg";
 const MACOS_DIR = "src-tauri/target/release/bundle/macos";
+const TARGET_DIR = "src-tauri/target";
+/// Past this, `pnpm dmg` suggests `pnpm clean`. Cargo never drops stale
+/// builds, so the target directory only grows.
+const TARGET_WARN_BYTES = 5 * 1024 ** 3;
 const REQUIRED = ["APPLE_ID", "APPLE_TEAM_ID", "APPLE_PASSWORD"];
 /// Where the update signing key lives, in order of preference. It sits with
 /// the other macOS signing material rather than in the repository: it cannot
@@ -102,15 +106,17 @@ function writeManifest(version) {
   return { manifest: path, payload, signature: `${payload}.sig` };
 }
 
-function newestDmg() {
-  const files = readdirSync(DMG_DIR)
-    .filter((name) => name.endsWith(".dmg"))
-    .map((name) => join(DMG_DIR, name));
-  if (!files.length) {
-    console.error(`No disk image found under ${DMG_DIR}.`);
-    process.exit(1);
-  }
-  return files.sort().at(-1);
+/// Prints a hint when the Cargo target directory has grown large. Advisory
+/// only: a failed `du` never stops a release.
+function warnIfTargetIsLarge() {
+  const result = spawnSync("du", ["-sk", TARGET_DIR], { encoding: "utf8" });
+  const kilobytes = Number.parseInt(result.stdout ?? "", 10);
+  if (!Number.isFinite(kilobytes) || kilobytes * 1024 < TARGET_WARN_BYTES) return;
+  const gigabytes = (kilobytes / 1024 ** 2).toFixed(1);
+  console.warn(
+    `\n${TARGET_DIR} is ${gigabytes} GB. Cargo keeps every stale build; ` +
+      `run \`pnpm clean\` after publishing to reclaim it.`,
+  );
 }
 
 loadCredentials();
@@ -126,10 +132,17 @@ if (missing.length) {
   process.exit(1);
 }
 
+// Clear the previous release's bundles first. Tauri only adds to these
+// folders, so a leftover image or payload could otherwise be the one that
+// gets notarized and uploaded.
+for (const directory of [DMG_DIR, MACOS_DIR]) {
+  rmSync(directory, { recursive: true, force: true });
+}
+
 // The updater payload is built from the app bundle, so both targets run.
 run("pnpm", ["tauri", "build", "--bundles", "app,dmg"], "Bundling");
 
-const dmg = newestDmg();
+const dmg = findOne(DMG_DIR, ".dmg", "disk image");
 console.log(`\nNotarizing ${dmg}`);
 // The password reaches notarytool as an argument, which is visible to other
 // processes on this machine for the life of the call.
@@ -167,3 +180,4 @@ console.log(
   "\nlatest.json is what installed copies read, so a release without it\n" +
     "offers nothing and one without the payload offers a broken download.",
 );
+warnIfTargetIsLarge();
